@@ -577,7 +577,7 @@ def train(config):
     return model
 
 
-if __name__ == '__main__':
+def train_cli():
     parser = argparse.ArgumentParser(description="Train model")
     parser.add_argument('config', type=str, help='Path to config YAML file')
     parser.add_argument('overrides', nargs='*', 
@@ -595,3 +595,7 @@ if __name__ == '__main__':
     print("Loaded config:")
     print(OmegaConf.to_yaml(config))
     train(config)
+
+
+if __name__ == '__main__':
+    train_cli()
