@@ -11,9 +11,9 @@ class ZipImageReader:
         self.zip_path = zip_path
         self.img_ext = img_ext.lower()
         self.zip_file = zipfile.ZipFile(zip_path, 'r')
-        # Deep search for image files
+        # Deep search for image files, ignore __MACOSX paths
         self.image_names = [name for name in self.zip_file.namelist()
-                            if name.lower().endswith(self.img_ext)]
+                            if name.lower().endswith(self.img_ext) and "__MACOSX" not in name]
         if len(self.image_names) == 0:
             raise ValueError(f"No images found in zip {zip_path} with extension {img_ext}")
 
@@ -40,9 +40,9 @@ class TarGzImageReader:
         self.tar_path = tar_path
         self.img_ext = img_ext.lower()
         self.tar_file = tarfile.open(tar_path, 'r:gz')
-        # Deep search for image files
+        # Deep search for image files, ignore __MACOSX paths
         self.image_members = [m for m in self.tar_file.getmembers()
-                              if m.name.lower().endswith(self.img_ext) and m.isfile()]
+                              if m.name.lower().endswith(self.img_ext) and m.isfile() and "__MACOSX" not in m.name]
         if len(self.image_members) == 0:
             raise ValueError(f"No images found in tar.gz {tar_path} with extension {img_ext}")
 

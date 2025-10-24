@@ -325,6 +325,10 @@ def train(config):
         # if exists delete the dir 
         if os.path.exists(config.train.save_dir):
             shutil.rmtree(config.train.save_dir)
+
+    out_config_path = os.path.join(config.train.save_dir, 'config.yaml')
+    if os.path.exists(out_config_path) and (not config.train.get('resume', False)):
+        raise FileExistsError(f"Config file {out_config_path} already exists. Please remove it or choose a different save directory.")
     
     model = build_class(config.model)
     model.to(config.train.device)
@@ -438,9 +442,7 @@ def train(config):
 
     # Save the final config to the run directory
     os.makedirs(config.train.save_dir, exist_ok=True)
-    out_config_path = os.path.join(config.train.save_dir, 'config.yaml')
-    if os.path.exists(out_config_path) and (not config.train.get('resume', False)):
-        raise FileExistsError(f"Config file {out_config_path} already exists. Please remove it or choose a different save directory.")
+    
     with open(out_config_path, 'w') as f:
         OmegaConf.save(config, f)
     
@@ -559,11 +561,12 @@ def train(config):
         # Save checkpoint
         if not config.train.get('no_save_weights', False):
             checkpoint_path = os.path.join(config.train.save_dir, f'model_epoch_{epoch+1}.pt')
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'loss': avg_loss,
-            }, checkpoint_path)
+            if not config.train.get('no_save_epoch_wise_weights', False):
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.state_dict(),
+                    'loss': avg_loss,
+                }, checkpoint_path)
 
             torch.save({
                 'epoch': epoch + 1,
