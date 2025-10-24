@@ -15,7 +15,7 @@ import json
 import shutil
 import subprocess
 
-from train_loop.utils import build_class
+from train_loop.utils.dynamic_import import build_class
 
 
 def move_to_device(batch, device):

@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torchaudio
-from utils import build_class
+from train_loop.utils.dynamic_import import build_class
 
 class FunctionLossWrapper:
     """Wrapper to make function losses compatible with class-based interface."""
