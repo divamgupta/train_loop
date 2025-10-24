@@ -14,8 +14,8 @@ import re
 import json
 import shutil
 import subprocess
-
-from train_loop.utils.dynamic_import import build_class
+from .losses import LossModule 
+from .utils.dynamic_import import build_class
 
 
 def move_to_device(batch, device):
@@ -370,7 +370,10 @@ def train(config):
     if gan_loss is not None:
         disc_optimizer = get_opt(gan_loss, config.train.gan_optimizer)
 
-    loss_function = build_class(config.losses)
+    if 'name' in config.losses:
+        loss_function = build_class(config.losses)
+    else:
+        loss_function = LossModule(**config.losses)
 
     # Track best validation loss for saving best model
     best_val_loss = float('inf')

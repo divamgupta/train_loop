@@ -42,15 +42,3 @@ def load_weights_pt(model, weights, ignore_prefix=None):
     model.load_state_dict(model_state_dict, strict=True)
     return model
 
-def get_model_weights_hash(model, algorithm='sha256'):
-    """
-    Compute a hash of the model's weights.
-    """
-    hasher = hashlib.new(algorithm)
-    state_dict = model.state_dict()
-    for key in sorted(state_dict.keys()):
-        tensor = state_dict[key]
-        buffer = io.BytesIO()
-        torch.save(tensor, buffer)
-        hasher.update(buffer.getvalue())
-    return hasher.hexdigest()
