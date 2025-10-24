@@ -103,3 +103,9 @@ def flexible_bce(batch, model_outs, src_key, tgt_key):
     else:
         return F.binary_cross_entropy(pred, gt)
 
+
+def cosine_loss(batch, model_outs, src_key, tgt_key, dim=-1):
+    """Cosine similarity loss between predictions and ground truth. Dim is the dimension where you have the vectors"""
+    pred = model_outs[src_key]
+    gt = batch[tgt_key]
+    return (1 - F.cosine_similarity(pred, gt, dim=dim)).mean()
