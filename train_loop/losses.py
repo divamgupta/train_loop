@@ -57,16 +57,22 @@ class LossModule():
         return loss, loss_dict
 
 
+def get_target(tgt_key, batch, model_outs):
+    """Return the target tensor from batch or model_outs, preferring batch."""
+    if tgt_key in batch:
+        return batch[tgt_key]
+    return model_outs[tgt_key]
+
 def mse(batch, model_outs, src_key , tgt_key):
-    gt = batch[tgt_key]
+    gt = get_target(tgt_key, batch, model_outs)
     pred = model_outs[src_key]
     return F.mse_loss(pred, gt)
 
 def flexible_l1(batch, model_outs, src_key, tgt_key):
     """Flexible L1 loss that handles both single tensors and lists of tensors."""
     pred = model_outs[src_key]
-    gt = batch[tgt_key]
-    
+    pred = model_outs[src_key]
+    gt = get_target(tgt_key, batch, model_outs)
     if type(pred) is list:
         list_loss = 0
         for i in range(len(pred)):
@@ -75,12 +81,10 @@ def flexible_l1(batch, model_outs, src_key, tgt_key):
     else:
         return F.l1_loss(pred, gt)
 
-
 def flexible_l1_smooth(batch, model_outs, src_key, tgt_key):
     """Flexible L1 loss that handles both single tensors and lists of tensors."""
     pred = model_outs[src_key]
-    gt = batch[tgt_key]
-    
+    gt = get_target(tgt_key, batch, model_outs)
     if type(pred) is list:
         list_loss = 0
         for i in range(len(pred)):
@@ -89,12 +93,10 @@ def flexible_l1_smooth(batch, model_outs, src_key, tgt_key):
     else:
         return F.smooth_l1_loss(pred, gt)
 
-
 def flexible_bce(batch, model_outs, src_key, tgt_key):
     """Flexible BCE loss that handles both single tensors and lists of tensors."""
     pred = model_outs[src_key]
-    gt = batch[tgt_key]
-    
+    gt = get_target(tgt_key, batch, model_outs)
     if type(pred) is list:
         list_loss = 0
         for i in range(len(pred)):
@@ -103,9 +105,8 @@ def flexible_bce(batch, model_outs, src_key, tgt_key):
     else:
         return F.binary_cross_entropy(pred, gt)
 
-
 def cosine_loss(batch, model_outs, src_key, tgt_key, dim=-1):
     """Cosine similarity loss between predictions and ground truth. Dim is the dimension where you have the vectors"""
     pred = model_outs[src_key]
-    gt = batch[tgt_key]
+    gt = get_target(tgt_key, batch, model_outs)
     return (1 - F.cosine_similarity(pred, gt, dim=dim)).mean()

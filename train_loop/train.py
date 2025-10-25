@@ -44,7 +44,7 @@ def get_opt(model, opt_config, print_summary=True):
     Returns an optimizer based on the configuration, and optionally prints a summary.
 
     Args:
-        model: Model to optimize
+        model: Model to optimize (supports DataParallel)
         opt_config: Dict with:
             - 'name' (optimizer type)
             - 'args' (dict of global arguments)
@@ -55,6 +55,9 @@ def get_opt(model, opt_config, print_summary=True):
     Returns:
         Optimizer instance
     """
+    # Support DataParallel by using .module for parameter lookup
+    real_model = model.module if hasattr(model, "module") else model
+
     opt_name = opt_config['name']
     args = opt_config.get('args', {})
     param_groups = opt_config.get('param_groups', None)
@@ -76,14 +79,14 @@ def get_opt(model, opt_config, print_summary=True):
             for name in param_names:
                 # Try submodule lookup
                 try:
-                    submodule = get_submodule_by_name(model, name)
+                    submodule = get_submodule_by_name(real_model, name)
                     for n, p in submodule.named_parameters(recurse=True):
                         params.append(p)
                         param_to_lr[p] = group_options.get('lr', args.get('lr', None))
                         all_param_ids.add(id(p))
                 except AttributeError:
                     # Fallback to named parameter
-                    p = dict(model.named_parameters()).get(name, None)
+                    p = dict(real_model.named_parameters()).get(name, None)
                     if p is not None:
                         params.append(p)
                         param_to_lr[p] = group_options.get('lr', args.get('lr', None))
@@ -99,8 +102,8 @@ def get_opt(model, opt_config, print_summary=True):
         opt_params = grouped_params
     else:
         # Fallback: all parameters, assign global lr
-        opt_params = model.parameters()
-        for n, p in model.named_parameters():
+        opt_params = real_model.parameters()
+        for n, p in real_model.named_parameters():
             param_to_lr[p] = args.get('lr', None)
             all_param_ids.add(id(p))
 
@@ -118,7 +121,7 @@ def get_opt(model, opt_config, print_summary=True):
 
     if print_summary:
         print("Optimizer parameter summary:")
-        param_to_name = {p: n for n, p in model.named_parameters()}
+        param_to_name = {p: n for n, p in real_model.named_parameters()}
         assigned = set()
         for i, group in enumerate(opt.param_groups):
             lr = group.get('lr', args.get('lr', None))
@@ -128,7 +131,7 @@ def get_opt(model, opt_config, print_summary=True):
                 assigned.add(id(p))
         # Find unassigned parameters
         print("Parameters NOT in any optimizer group:")
-        for n, p in model.named_parameters():
+        for n, p in real_model.named_parameters():
             if id(p) not in assigned:
                 print(f"  {n}")
     return opt
@@ -330,20 +333,36 @@ def train(config):
     if os.path.exists(out_config_path) and (not config.train.get('resume', False)):
         raise FileExistsError(f"Config file {out_config_path} already exists. Please remove it or choose a different save directory.")
     
+    # Multi-GPU support
+    n_gpus = config.train.get('n_gpus', 1)
+    device = config.train.device
+    if n_gpus > 1:
+        assert torch.cuda.is_available(), "Multi-GPU requested but CUDA is not available."
+        device = torch.device("cuda:0")
+        print(f"Using {n_gpus} GPUs for training (DataParallel)")
+    else:
+        device = torch.device(device)
+
     model = build_class(config.model)
-    model.to(config.train.device)
+    model.to(device)
+    if n_gpus > 1:
+        model = torch.nn.DataParallel(model, device_ids=list(range(n_gpus)))
 
     extra_models = {}
     if 'extra_models' in config and config.extra_models is not None:
         for name, model_cfg in config.extra_models.items():
             extra_model = build_class(model_cfg)
-            extra_model.to(config.train.device)
+            extra_model.to(device)
+            if n_gpus > 1:
+                extra_model = torch.nn.DataParallel(extra_model, device_ids=list(range(n_gpus)))
             extra_models[name] = extra_model
-           
+
     gan_loss = None
     if 'gan_loss' in config and config.gan_loss is not None:
         gan_loss = build_class(config.gan_loss)
-        gan_loss.to(config.train.device)
+        gan_loss.to(device)
+        if n_gpus > 1:
+            gan_loss = torch.nn.DataParallel(gan_loss, device_ids=list(range(n_gpus)))
 
     dataset = build_class(config.dataset)
     # Setup dataloader
@@ -364,12 +383,12 @@ def train(config):
         )
 
     dataset.extra_models = extra_models
-    val_dataset.extra_models = extra_models
-    
+    if val_dataset is not None:
+        val_dataset.extra_models = extra_models
+
     # Load checkpoint if specified
     start_epoch = 0
     optimizer = get_opt(model, config.train.optimizer)
-
     disc_optimizer = None
     if gan_loss is not None:
         disc_optimizer = get_opt(gan_loss, config.train.gan_optimizer)
@@ -390,7 +409,11 @@ def train(config):
         latest_checkpoint, latest_epoch = get_latest_checkpoint(config.train.save_dir)
         if latest_checkpoint:
             checkpoint = torch.load(latest_checkpoint)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            # For DataParallel, load state_dict to .module
+            if n_gpus > 1:
+                model.module.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                model.load_state_dict(checkpoint['model_state_dict'])
             
             if 'optimizer_state_dict' in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -402,7 +425,10 @@ def train(config):
     elif config.train.get('resume_checkpoint_path') and os.path.exists(config.train.resume_checkpoint_path):
         # Manual checkpoint path specified
         checkpoint = torch.load(config.train.resume_checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        if n_gpus > 1:
+            model.module.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint['model_state_dict'])
         
         if 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -448,7 +474,11 @@ def train(config):
     
     # Put models in training/eval mode
     model.train()
-    
+    # If extra models and gan_loss, set train mode
+
+    if gan_loss is not None:
+        gan_loss.train()
+
     # Get evaluation frequency
     eval_frequency = config.train.get('num_eval_every_steps', 1000)
     global_step = 0
@@ -476,7 +506,7 @@ def train(config):
                 print("Batch is None, skipping...")
                 continue
             
-            batch_inputs_dict = move_to_device(batch_inputs_dict, config.train.device)
+            batch_inputs_dict = move_to_device(batch_inputs_dict, device)
 
             if hasattr(dataset , 'post_process_batch'):
                 dataset.post_process_batch(batch_inputs_dict)
@@ -485,19 +515,29 @@ def train(config):
             model_outputs = model(batch_inputs_dict)
 
             if gan_loss is not None:
-                loss_disc = gan_loss.discriminator_loss(batch_inputs_dict['teacher_audio'] , model_outputs['final_audio'])
+                # For DataParallel, access .module if needed
+                disc_loss_fn = gan_loss
+                if n_gpus > 1 and hasattr(gan_loss, 'module'):
+                    disc_loss_fn = gan_loss.module
+                loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
                 disc_optimizer.zero_grad()
                 loss_disc.backward(retain_graph=True)
                 disc_optimizer.step()
 
-            loss , losses = loss_function(batch_inputs_dict , model_outputs)
+            loss_fn = loss_function
+            if n_gpus > 1 and hasattr(loss_function, 'module'):
+                loss_fn = loss_function.module
+            loss, losses = loss_fn(batch_inputs_dict, model_outputs)
 
             if gan_loss is not None:
-                gen_loss = gan_loss.generator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
+                gen_loss_fn = gan_loss
+                if n_gpus > 1 and hasattr(gan_loss, 'module'):
+                    gen_loss_fn = gan_loss.module
+                gen_loss = gen_loss_fn.generator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
                 loss += gen_loss * config.gan_loss.gen_loss_weight
                 losses['gen_loss'] = gen_loss
                 losses['disc_loss'] = loss_disc
-            
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -535,7 +575,10 @@ def train(config):
             
             # Run validation if needed
             if val_dataloader is not None and eval_frequency > 0 and global_step % eval_frequency == 0:
-                val_loss, val_loss_components = evaluate_loss(model, val_dataloader, loss_function, config.train.device)
+                val_loss_fn = loss_function
+                if n_gpus > 1 and hasattr(loss_function, 'module'):
+                    val_loss_fn = loss_function.module
+                val_loss, val_loss_components = evaluate_loss(model, val_dataloader, val_loss_fn, device)
                 
                 # Append validation loss to jsonl file
                 val_loss_components['step'] = global_step
@@ -561,20 +604,20 @@ def train(config):
         # Save checkpoint
         if not config.train.get('no_save_weights', False):
             checkpoint_path = os.path.join(config.train.save_dir, f'model_epoch_{epoch+1}.pt')
+            state_dict = model.module.state_dict() if n_gpus > 1 else model.state_dict()
             if not config.train.get('no_save_epoch_wise_weights', False):
                 torch.save({
                     'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
+                    'model_state_dict': state_dict,
                     'loss': avg_loss,
                 }, checkpoint_path)
 
             torch.save({
                 'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': state_dict,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_loss,
             }, os.path.join(config.train.save_dir, 'model_latest.pt'))
-            
         else:
             print("Skipping checkpoint save (no_save_weights=True)")
     
