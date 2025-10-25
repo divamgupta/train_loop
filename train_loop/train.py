@@ -586,22 +586,34 @@ def train(config):
 def train_cli():
     parser = argparse.ArgumentParser(description="Train model")
     parser.add_argument('config', type=str, help='Path to config YAML file')
-    parser.add_argument('overrides', nargs='*', 
-                       help='Override config values using dotpath notation (e.g., train.lr=0.001, model.hidden_size=256)')
-
+    parser.add_argument('overrides', nargs='*',
+                        help='Override config values using dotpath notation (e.g., train.lr=0.001, model.hidden_size=256)')
     args = parser.parse_args()
     config = OmegaConf.load(args.config)
     
     # Apply config overrides using OmegaConf CLI
     if args.overrides:
         override_config = OmegaConf.from_dotlist(args.overrides)
+        
+        # Validate that all override keys exist in the original config
+        def validate_keys(override_cfg, original_cfg, path=""):
+            for key in override_cfg:
+                current_path = f"{path}.{key}" if path else key
+                
+                if key not in original_cfg:
+                    raise KeyError(f"Override key '{current_path}' does not exist in the original config")
+                if OmegaConf.is_config(override_cfg[key]) and OmegaConf.is_config(original_cfg[key]):
+                    validate_keys(override_cfg[key], original_cfg[key], current_path)
+
+        if override_config.get("validate_override_keys", True):
+            validate_keys(override_config, config)
+        
         config = OmegaConf.merge(config, override_config)
         print(f"Applied overrides: {args.overrides}")
     
     print("Loaded config:")
     print(OmegaConf.to_yaml(config))
     train(config)
-
 
 if __name__ == '__main__':
     train_cli()
