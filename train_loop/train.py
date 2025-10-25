@@ -535,17 +535,21 @@ def train(config):
         loss_history = {}
         rolling_window = 30
 
-        if "summary_functions" in config:
-            for func in config.summary_functions:
-                summary_func = build_class(func)
-                summary_func.run(model, dataset, config.train.save_dir, epoch)
+        if is_master:
+            if "summary_functions" in config:
+                for func in config.summary_functions:
+                    summary_func = build_class(func)
+                    summary_func.run(model, dataset, config.train.save_dir, epoch)
         
         if use_tqdm:
             progress_bar = tqdm(range(iterations_per_epoch), desc=f"Epoch {epoch+1}/{config.train.epochs} - Avg Loss: 0.000000")
         else:
             progress_bar = range(iterations_per_epoch)
-        
+            iter_times = []
+
         for batch_idx in progress_bar:
+
+            iter_start_time = time.time()
             batch_inputs_dict = next(data_generator)
 
             if batch_inputs_dict is None:
@@ -643,8 +647,13 @@ def train(config):
             if use_tqdm:
                 progress_bar.set_description(f"Epoch {epoch+1}/{config.train.epochs} - Avg Loss: {current_avg_loss:.6f} | {loss_str}")
             else:
-                print(f"Rank {local_rank} Epoch {epoch+1}/{config.train.epochs} , Iter {batch_idx}/{iterations_per_epoch} - Avg Loss: {current_avg_loss:.6f} | {loss_str}")
-            
+                iter_end_time = time.time()
+                iter_time = iter_end_time - iter_start_time
+                iter_times.append(iter_time)
+                avg_iter_time = sum(iter_times) / len(iter_times)
+                remaining_iters = iterations_per_epoch - (batch_idx + 1)
+                eta = remaining_iters * avg_iter_time
+                print(f"Rank {local_rank} Epoch {epoch+1}/{config.train.epochs} , Iter {batch_idx+1}/{iterations_per_epoch} - Avg Loss: {current_avg_loss:.6f} | {loss_str} | Iter time: {iter_time:.2f}s | ETA: {eta:.2f}s")
             
         # Calculate average loss
         avg_loss = epoch_loss / iterations_per_epoch
@@ -671,7 +680,7 @@ def train(config):
                 }, os.path.join(config.train.save_dir, 'model_latest.pt'))
             else:
                 print("Skipping checkpoint save (no_save_weights=True)")
-
+    
     if is_master:
         print("Training completed!")
         print("Saved in " , config.train.save_dir)
@@ -704,11 +713,50 @@ def train_cli():
 
         if override_config.get("validate_override_keys", True):
             validate_keys(override_config, config)
-        
         config = OmegaConf.merge(config, override_config)
         print(f"Applied overrides: {args.overrides}")
     
     print("Loaded config:")
     print(OmegaConf.to_yaml(config))
+
+
+    # --- DDP torchrun auto-restart logic ---
+    use_ddp = config.train.get('use_ddp', False)
+    n_gpus = config.train.get('n_gpus', 1)
+    local_rank_env = os.environ.get('LOCAL_RANK', None)
+    # If DDP is enabled, but not run with torchrun (LOCAL_RANK not set), restart with torchrun
+    if use_ddp and local_rank_env is None:
+        print("DDP is enabled but not running under torchrun. Restarting with torchrun...")
+
+        # Base torchrun command
+        torchrun_cmd = [
+            "torchrun",
+            f"--nproc_per_node={n_gpus}",
+            "--master_port=29500",  # You may want to make this configurable
+        ]
+
+        # If the script was started with `python -m <module>`, prefer restarting
+        # using: torchrun ... python -m <module> <config> ...
+        module_name = None
+        spec = globals().get("__spec__", None)
+        if spec and getattr(spec, "name", None):
+            module_name = spec.name
+
+        if module_name:
+            # Use the same python executable and module form
+            torchrun_cmd.extend([ "-m", module_name, args.config])
+        else:
+            # Fallback to script path (sys.argv[0]) for normal python script execution
+            torchrun_cmd.extend([sys.argv[0], args.config])
+
+        # Append any overrides
+        torchrun_cmd.extend(args.overrides or [])
+        print("Running:", " ".join(torchrun_cmd))
+        os.execvp("torchrun", torchrun_cmd)
+        return  # Should not reach here
+
     train(config)
 
+
+if __name__ == "__main__":
+    train_cli()
