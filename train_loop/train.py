@@ -327,6 +327,7 @@ def train(config):
     world_size = int(os.environ.get('WORLD_SIZE', 1)) if use_ddp else 1
     n_gpus = config.train.get('n_gpus', 1)
 
+    find_unused_parameters = config.train.get('find_unused_parameters', True)  
 
     if use_ddp:
         assert world_size == n_gpus
@@ -373,7 +374,7 @@ def train(config):
     model = build_class(config.model)
     model.to(device)
     if use_ddp:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
     elif n_gpus > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(n_gpus)))
 
@@ -383,9 +384,14 @@ def train(config):
             extra_model = build_class(model_cfg)
             extra_model.to(device)
             if use_ddp:
-                extra_model = DDP(extra_model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+                pass
+                # extra_model = DDP(extra_model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
             elif n_gpus > 1:
                 extra_model = torch.nn.DataParallel(extra_model, device_ids=list(range(n_gpus)))
+
+            for param in extra_model.parameters():
+                param.requires_grad = False
+
             extra_models[name] = extra_model
 
     gan_loss = None
@@ -393,7 +399,7 @@ def train(config):
         gan_loss = build_class(config.gan_loss)
         gan_loss.to(device)
         if use_ddp:
-            gan_loss = DDP(gan_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+            gan_loss = DDP(gan_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
         elif n_gpus > 1:
             gan_loss = torch.nn.DataParallel(gan_loss, device_ids=list(range(n_gpus)))
 
