@@ -654,6 +654,15 @@ def train(config):
                     if is_distributed  and hasattr(loss_function, 'module'):
                         val_loss_fn = loss_function.module
                     val_loss, val_loss_components = evaluate_loss(model, val_dataloader, val_loss_fn, device)
+
+                    # get metrics also 
+                    if metrics_module is not None:
+                        metrics_fn = metrics_module
+                        if is_distributed and hasattr(metrics_module, 'module'):
+                            metrics_fn = metrics_module.module
+                        _ , val_metrics = evaluate_loss(model, val_dataloader, metrics_fn, device)
+                        val_loss_components.update(val_metrics)
+                    val_loss_components['total_loss'] = val_loss
                     
                     # Append validation loss to jsonl file
                     val_loss_components['step'] = global_step
