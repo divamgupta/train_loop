@@ -453,6 +453,14 @@ def train(config):
     else:
         loss_function = LossModule(**config.losses)
 
+    if 'metrics' in config:
+        if 'name' in config.metrics:
+            metrics_module = build_class(config.metrics)
+        else:
+            metrics_module = LossModule(**config.metrics)
+    else:
+        metrics_module = None
+
     # Track best validation loss for saving best model
     best_val_loss = float('inf')
 
@@ -585,6 +593,14 @@ def train(config):
                 loss_fn = loss_function.module
             loss, losses = loss_fn(batch_inputs_dict, model_outputs)
 
+            # --- Compute metrics ---
+            metrics_result = None
+            if metrics_module is not None:
+                metrics_fn = metrics_module
+                if is_distributed and hasattr(metrics_module, 'module'):
+                    metrics_fn = metrics_module.module
+                _ , metrics_result = metrics_fn(batch_inputs_dict, model_outputs)
+
             if gan_loss is not None:
                 gen_loss_fn = gan_loss
                 if is_distributed and hasattr(gan_loss, 'module'):
@@ -602,7 +618,9 @@ def train(config):
             global_step += 1
             
             # Update rolling average for each loss component
-            for k, v in losses.items():
+            losses_plus_metrics = losses.copy()
+            losses_plus_metrics.update(metrics_result or {})
+            for k, v in losses_plus_metrics.items():
                 if k not in loss_history:
                     loss_history[k] = []
                 loss_history[k].append(v.item())

@@ -110,3 +110,34 @@ def cosine_loss(batch, model_outs, src_key, tgt_key, dim=-1):
     pred = model_outs[src_key]
     gt = get_target(tgt_key, batch, model_outs)
     return (1 - F.cosine_similarity(pred, gt, dim=dim)).mean()
+
+def cross_entropy_classification_loss(batch, model_outs, src_key, tgt_key):
+    """
+    Classification loss for logits and class IDs.
+    Args:
+        batch: dict containing ground truth class IDs (tgt_key)
+        model_outs: dict containing predicted logits (src_key)
+        src_key: key for logits in model_outs
+        tgt_key: key for class IDs in batch or model_outs
+    Returns:
+        Cross-entropy loss
+    """
+    logits = model_outs[src_key]
+    class_ids = get_target(tgt_key, batch, model_outs)
+    return F.cross_entropy(logits, class_ids)
+
+def accuracy_classification(batch, model_outs, src_key, tgt_key):
+    """
+    Accuracy metric for classification.
+    Args:
+        batch: dict containing ground truth class IDs (tgt_key)
+        model_outs: dict containing predicted logits (src_key)
+        src_key: key for logits in model_outs
+        tgt_key: key for class IDs in batch or model_outs
+    Returns:
+        Accuracy as a float tensor
+    """
+    logits = model_outs[src_key]
+    class_ids = get_target(tgt_key, batch, model_outs)
+    preds = torch.argmax(logits, dim=-1)
+    return (preds == class_ids).float().mean()
