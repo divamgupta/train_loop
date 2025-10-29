@@ -10,7 +10,7 @@ class ImageDataset(Dataset):
     Loads images from a directory or zip/tar.gz file and prepares them for the distillation process.
     """
     
-    def __init__(self, img_dir="imgs", img_ext=".jpg", transform=None):
+    def __init__(self, img_dir="imgs", img_ext=".jpg", transform=None, return_classes_from_path=False):
         """
         Initialize the dataset.
         
@@ -18,10 +18,12 @@ class ImageDataset(Dataset):
             img_dir: Directory containing the images or zip/tar.gz file
             img_ext: Image file extension
             transform: Optional additional transformations
+            return_classes_from_path: If True, extract class names/ids from image paths
         """
         self.img_dir = img_dir
         self.transform = transform
         self.img_ext = img_ext
+        self.return_classes_from_path = return_classes_from_path
 
         if img_dir.lower().endswith('.zip'):
             # Read from zip file
@@ -46,7 +48,16 @@ class ImageDataset(Dataset):
         
         if len(self.image_paths) == 0:
             raise ValueError(f"No images found in {img_dir} with extension {img_ext}")
-            
+        
+        if self.return_classes_from_path:
+            # Collect class names from image paths
+            class_names = [img_path.split('/')[-2] if '/' in img_path else 'unknown' for img_path in self.image_paths]
+            self.class_names_sorted = sorted(set(class_names))
+            self.class_name_to_id = {name: idx for idx, name in enumerate(self.class_names_sorted)}
+        else:
+            self.class_names_sorted = None
+            self.class_name_to_id = None
+
     def __len__(self):
         """Return the total number of images in the dataset."""
         return len(self.image_paths)
@@ -73,13 +84,23 @@ class ImageDataset(Dataset):
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).float()
 
+        if self.return_classes_from_path:
+            class_name = img_path.split('/')[-2] if '/' in img_path else 'unknown'
+            class_id = self.class_name_to_id.get(class_name, -1)
+        else:
+            class_name = None
+            class_id = None
+
         
         # Apply additional transforms if specified
         if self.transform:
             img_tensor = self.transform(img_tensor)
-            
-        return {'image': img_tensor, 'path': img_path}
-    
+        result = {'image': img_tensor, 'path': img_path}
+        if self.return_classes_from_path:
+            result['class_name'] = class_name
+            result['class_id'] = class_id
+        return result
+
     def __del__(self):
         # Clean up archive file handle if needed
         if hasattr(self, 'zip_reader'):
@@ -101,8 +122,10 @@ class ImageDataset(Dataset):
         """
         images = [item['image'] for item in batch]
         paths = [item['path'] for item in batch]
-        
-        # Stack images into a single batch tensor
-        batch_tensor = torch.stack(images, dim=0)
-
-        return {'image': batch_tensor, 'path': paths}
+        batch_dict = {'image': torch.stack(images, dim=0), 'path': paths}
+        if 'class_name' in batch[0] and 'class_id' in batch[0]:
+            class_names = [item['class_name'] for item in batch]
+            class_ids = [item['class_id'] for item in batch]
+            batch_dict['class_name'] = class_names
+            batch_dict['class_id'] = torch.tensor(class_ids, dtype=torch.long)
+        return batch_dict
