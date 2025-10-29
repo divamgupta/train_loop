@@ -327,6 +327,8 @@ def train(config):
     world_size = int(os.environ.get('WORLD_SIZE', 1)) if use_ddp else 1
     n_gpus = config.train.get('n_gpus', 1)
 
+    effective_batch_size = config.train.batch_size * n_gpus  
+
     find_unused_parameters = config.train.get('find_unused_parameters', True)  
 
     if use_ddp:
@@ -338,7 +340,7 @@ def train(config):
 
     if 'sanity' in config and config.sanity:
         config.train.epochs = 3
-        config.train.num_per_epoch = 36
+        config.train.num_per_epoch = max(36 , effective_batch_size * 6)
         config.train.save_dir = "/tmp/sanity_check"
         config.train.num_eval_every_steps=4
 
@@ -505,12 +507,12 @@ def train(config):
     
     # Calculate iterations per epoch
     if config.train.num_per_epoch <= 0:
-        iterations_per_epoch = len(dataset) // config.train.batch_size
-        if len(dataset) % config.train.batch_size != 0:
+        iterations_per_epoch = len(dataset) // effective_batch_size
+        if len(dataset) % effective_batch_size != 0:
             iterations_per_epoch += 1
     else:
-        iterations_per_epoch = config.train.num_per_epoch // config.train.batch_size
-        if config.train.num_per_epoch % config.train.batch_size != 0:
+        iterations_per_epoch = config.train.num_per_epoch // effective_batch_size
+        if config.train.num_per_epoch % effective_batch_size != 0:
             iterations_per_epoch += 1
     
     # Create infinite generator
@@ -761,11 +763,13 @@ def train_cli():
     if use_ddp and local_rank_env is None:
         print("DDP is enabled but not running under torchrun. Restarting with torchrun...")
 
+        random_port = 29500 + int.from_bytes(os.urandom(2), "big") % 1000
+
         # Base torchrun command
         torchrun_cmd = [
             "torchrun",
             f"--nproc_per_node={n_gpus}",
-            "--master_port=29500",  # You may want to make this configurable
+            f"--master_port={random_port}",
         ]
 
         # If the script was started with `python -m <module>`, prefer restarting
