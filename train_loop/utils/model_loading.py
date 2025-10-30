@@ -2,6 +2,50 @@ import torch
 import io
 import hashlib
 from .download import download_file
+import os
+import re
+import glob
+
+def get_latest_checkpoint(save_dir):
+    """
+    Find the latest checkpoint file in the save directory.
+    First checks for model_latest.pt, then falls back to model_epoch_*.pt files.
+    
+    Args:
+        save_dir: Directory to search for checkpoints
+        
+    Returns:
+        tuple: (checkpoint_path, epoch_number) or (None, 0) if no checkpoints found
+    """
+    # First check for model_latest.pt
+    latest_path = os.path.join(save_dir, 'model_latest.pt')
+    if os.path.exists(latest_path):
+        checkpoint = torch.load(latest_path, map_location='cpu')
+        epoch_num = checkpoint['epoch']
+        return latest_path, epoch_num
+       
+    # Fall back to looking for checkpoint files matching the pattern
+    checkpoint_pattern = os.path.join(save_dir, 'model_epoch_*.pt')
+    checkpoint_files = glob.glob(checkpoint_pattern)
+    
+    if not checkpoint_files:
+        return None, 0
+    
+    # Extract epoch numbers and find the latest
+    latest_epoch = 0
+    latest_checkpoint = None
+    
+    for checkpoint_file in checkpoint_files:
+        # Extract epoch number from filename
+        match = re.search(r'model_epoch_(\d+)\.pt', checkpoint_file)
+        if match:
+            epoch_num = int(match.group(1))
+            if epoch_num > latest_epoch:
+                latest_epoch = epoch_num
+                latest_checkpoint = checkpoint_file
+    
+    return latest_checkpoint, latest_epoch
+
 
 def load_model_weights(model_path):
     """Load model weights, trying direct load first, then fallback to 'model_state_dict' key"""

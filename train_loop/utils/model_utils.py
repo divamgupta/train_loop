@@ -52,3 +52,18 @@ def get_model_weights_hash(model, algorithm='sha256'):
         torch.save(tensor, buffer)
         hasher.update(buffer.getvalue())
     return hasher.hexdigest()
+
+def move_to_device(batch, device):
+    """
+    Recursively moves all tensors in a batch to the specified device.
+    Handles dictionaries, lists, and tensors.
+    """
+    if isinstance(batch, torch.Tensor):
+        return batch.to(device)
+    elif isinstance(batch, list):
+        return [move_to_device(item, device) for item in batch]
+    elif isinstance(batch, dict):
+        return {k: move_to_device(v, device) for k, v in batch.items()}
+    else:
+        return batch
+
