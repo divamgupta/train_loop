@@ -31,10 +31,6 @@ def train_cli():
             validate_keys(override_config, config)
         config = OmegaConf.merge(config, override_config)
         print(f"Applied overrides: {args.overrides}")
-    
-    print("Loaded config:")
-    print(OmegaConf.to_yaml(config))
-
 
     # --- DDP torchrun auto-restart logic ---
     use_ddp = config.train.get('use_ddp', False)

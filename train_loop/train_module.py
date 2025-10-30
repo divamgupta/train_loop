@@ -38,6 +38,10 @@ def train(config):
     if use_ddp and local_rank != 0:
         is_master = False
 
+    if is_master:
+        print("Training Configuration:")
+        print(OmegaConf.to_yaml(config))
+
     if 'sanity' in config and config.sanity:
         config.train.epochs = 3
         config.train.num_per_epoch = max(36 , effective_batch_size * 6)
@@ -48,6 +52,9 @@ def train(config):
         if is_master:
             if os.path.exists(config.train.save_dir):
                 shutil.rmtree(config.train.save_dir)
+
+        if use_ddp:
+            time.sleep(2)  # Ensure all processes wait for dir deletion
 
     out_config_path = os.path.join(config.train.save_dir, 'config.yaml')
     if os.path.exists(out_config_path) and (not config.train.get('resume', False)):
@@ -145,10 +152,10 @@ def train(config):
 
     # Load checkpoint if specified
     start_epoch = 0
-    optimizer = get_opt(model, config.train.optimizer)
+    optimizer = get_opt(model, config.train.optimizer, print_summary=is_master)
     disc_optimizer = None
     if gan_loss is not None:
-        disc_optimizer = get_opt(gan_loss, config.train.gan_optimizer)
+        disc_optimizer = get_opt(gan_loss, config.train.gan_optimizer, print_summary=is_master)
 
     if 'name' in config.losses:
         loss_function = build_class(config.losses)
