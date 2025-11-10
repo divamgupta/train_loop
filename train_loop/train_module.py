@@ -18,6 +18,7 @@ from .optimizer import get_opt
 from .utils.model_loading import get_latest_checkpoint
 from .utils.model_utils import move_to_device
 from .evaluate_module import evaluate_loss
+from .utils.download import download_file
 
 def train(config):
 
@@ -192,7 +193,21 @@ def train(config):
             print(f"Auto-resuming from latest checkpoint: {latest_checkpoint} at epoch {start_epoch}")
         else:
             print("No checkpoints found for resuming, starting from scratch")
-    elif config.train.get('resume_checkpoint_path') and os.path.exists(config.train.resume_checkpoint_path):
+    elif config.train.get('resume_checkpoint_path') and (os.path.exists(config.train.resume_checkpoint_path) or config.train.resume_checkpoint_path.startswith("http")):
+        if config.train.resume_checkpoint_path.startswith("http"):
+            # Download the checkpoint file
+            if is_master:
+                _ = download_file(config.train.resume_checkpoint_path)
+            else:
+                time.sleep(2)
+                # Wait for the master to download
+                print("Waiting for master to download checkpoint...")
+                
+            torch.distributed.barrier()
+            print("Loading checkpoint from URL...")
+            checkpoint_path = download_file(config.train.resume_checkpoint_path)
+            config.train.resume_checkpoint_path = checkpoint_path
+                
         # Manual checkpoint path specified
         checkpoint = torch.load(config.train.resume_checkpoint_path, map_location=device)
         if is_distributed: # (use_ddp or n_gpus > 1) and hasattr(model, "module"):
@@ -243,7 +258,8 @@ def train(config):
 
     # Get evaluation frequency
     eval_frequency = config.train.get('num_eval_every_steps', 1000)
-    global_step = 0
+    # Calculate global_step based on start_epoch
+    global_step = start_epoch * iterations_per_epoch
     
     # Training loop
     for epoch in range(start_epoch, config.train.epochs):
