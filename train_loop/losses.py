@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torchaudio
-from train_loop.utils.dynamic_import import build_class
+from train_loop.utils.dynamic_import import build_class, get_obj
 
 class FunctionLossWrapper:
     """Wrapper to make function losses compatible with class-based interface."""
@@ -15,9 +15,13 @@ class FunctionLossWrapper:
 
 def make_loss_module(loss_name, loss_args):
     args = {k: v for k, v in loss_args.items() if k not in ['weight', 'function_name']}
-    
-    # Try to get the loss function/class from globals
-    loss_obj = globals().get(loss_name)
+
+    if get_obj(loss_name, return_none_if_not_found=True) is None:
+        # Try to get the loss function/class from globals
+        loss_obj = globals().get(loss_name)
+    else:
+        loss_obj = get_obj(loss_name)
+        print("Got  ext loss object:", loss_obj)
     
     if loss_obj is None:
         # Fallback to build_class for external losses

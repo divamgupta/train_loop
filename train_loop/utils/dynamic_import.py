@@ -19,3 +19,26 @@ def build_class(config):
         else:
             m.load_state_dict(load_model_weights(ckpt_path), strict=True)
     return m
+
+def get_obj(class_name, return_none_if_not_found=False):
+    if '.' not in class_name and return_none_if_not_found:
+        return None
+    elif '.' not in class_name:
+        raise ValueError(f"Class name {class_name} is not a valid module path.")
+    module_path, class_name = class_name.rsplit('.', 1)
+    module = None
+    cls = None
+    if return_none_if_not_found:
+        try:
+            module = importlib.import_module(module_path)
+        except ModuleNotFoundError:
+            return None
+        try:
+            cls = getattr(module, class_name)
+        except AttributeError:
+            return None
+        return cls
+    else:
+        module = importlib.import_module(module_path)
+        cls = getattr(module, class_name)
+        return cls
