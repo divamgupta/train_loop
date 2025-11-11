@@ -3,6 +3,11 @@ sys.path.append(".")
 
 import os
 import torch
+
+# Add these lines to limit threading
+# os.environ["OMP_NUM_THREADS"] = "1"
+# os.environ["MKL_NUM_THREADS"] = "1"
+
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import time
@@ -21,6 +26,10 @@ from .evaluate_module import evaluate_loss
 from .utils.download import download_file
 
 def train(config):
+
+    if config.train.get('pt_single_threaded', True):
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
 
     # DDP support
     use_ddp = config.train.get('use_ddp', False)
