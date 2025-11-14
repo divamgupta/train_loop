@@ -59,12 +59,16 @@ def train(config):
     world_size = int(os.environ.get('WORLD_SIZE', 1)) if use_ddp else 1
     n_gpus = config.train.get('n_gpus', 1)
 
-    effective_batch_size = config.train.batch_size * n_gpus  
+    gradient_accum_steps = config.train.get('gradient_accum_steps', 1)
+
+    effective_batch_size = config.train.batch_size * n_gpus * gradient_accum_steps
 
     find_unused_parameters = config.train.get('find_unused_parameters', True)  
 
     is_compile_model = config.train.get('compile_model', False)
     is_compile_model_with_loss = config.train.get('is_compile_model_with_loss', False)
+
+    
 
     if is_compile_model_with_loss:
         assert is_compile_model, "If compiling model with loss, 'compile_model' must be True."
@@ -124,8 +128,16 @@ def train(config):
         autocast_ctx = nullcontext()
 
 
-    model = build_class(config.model)
-    model.to(device)
+    if config.train.get('create_model_meta_init', False):
+        with torch.device("meta"):
+            model = build_class(config.model)
+        model.to_empty(device=device)
+    else:
+        model = build_class(config.model)
+        model.to(device)
+
+    if hasattr(model, 'init_weights'):
+        model.init_weights()
 
     if 'name' in config.losses:
         loss_function = build_class(config.losses)
@@ -351,59 +363,71 @@ def train(config):
         for batch_idx in progress_bar:
 
             iter_start_time = time.time()
-            batch_inputs_dict = next(data_generator)
 
-            if batch_inputs_dict is None:
-                print("Batch is None, skipping...")
-                continue
-            
-            batch_inputs_dict = move_to_device(batch_inputs_dict, device)
+            if is_distributed:
+                torch.cuda.synchronize()
 
-            if hasattr(dataset , 'post_process_batch'):
-                dataset.post_process_batch(batch_inputs_dict)
-            
-            with autocast_ctx:
-                if model_with_loss is not None:
-                    loss, losses = model_with_loss(batch_inputs_dict)
-                else:
-                    model_outputs = model(batch_inputs_dict)
+            for mini_i in range(gradient_accum_steps):
+                batch_inputs_dict = next(data_generator)
 
-                if gan_loss is not None:
-                    # For DataParallel, access .module if needed
-                    disc_loss_fn = gan_loss
-                    if is_distributed and hasattr(gan_loss, 'module'):
-                        disc_loss_fn = gan_loss.module
-                    loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
-                    disc_optimizer.zero_grad()
-                    loss_disc.backward(retain_graph=True)
-                    disc_optimizer.step()
+                if batch_inputs_dict is None:
+                    print("Batch is None, skipping...")
+                    continue
+                
+                batch_inputs_dict = move_to_device(batch_inputs_dict, device)
 
-                if model_with_loss is None:
-                    loss_fn = loss_function
-                    if is_distributed and hasattr(loss_function, 'module'):
-                        loss_fn = loss_function.module
-                    loss, losses = loss_fn(batch_inputs_dict, model_outputs)
+                if hasattr(dataset , 'post_process_batch'):
+                    dataset.post_process_batch(batch_inputs_dict)
+                
+                
+                with autocast_ctx:
+                    if model_with_loss is not None:
+                        loss, losses = model_with_loss(batch_inputs_dict)
+                    else:
+                        model_outputs = model(batch_inputs_dict)
 
-                # --- Compute metrics ---
-                metrics_result = None
-                if metrics_module is not None:
-                    metrics_fn = metrics_module
-                    if is_distributed and hasattr(metrics_module, 'module'):
-                        metrics_fn = metrics_module.module
-                    _ , metrics_result = metrics_fn(batch_inputs_dict, model_outputs)
+                    if gan_loss is not None:
+                        assert gradient_accum_steps == 1, "GAN loss with gradient accumulation is not supported yet."
+                        # For DataParallel, access .module if needed
+                        disc_loss_fn = gan_loss
+                        if is_distributed and hasattr(gan_loss, 'module'):
+                            disc_loss_fn = gan_loss.module
+                        loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
+                        disc_optimizer.zero_grad()
+                        loss_disc.backward(retain_graph=True)
+                        disc_optimizer.step()
 
-                if gan_loss is not None:
-                    gen_loss_fn = gan_loss
-                    if is_distributed and hasattr(gan_loss, 'module'):
-                        gen_loss_fn = gan_loss.module
-                    gen_loss = gen_loss_fn.generator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
-                    loss += gen_loss * config.gan_loss.gen_loss_weight
-                    losses['gen_loss'] = gen_loss
-                    losses['disc_loss'] = loss_disc
+                    if model_with_loss is None:
+                        loss_fn = loss_function
+                        if is_distributed and hasattr(loss_function, 'module'):
+                            loss_fn = loss_function.module
+                        loss, losses = loss_fn(batch_inputs_dict, model_outputs)
 
-            optimizer.zero_grad()
-            loss.backward()
+                    # --- Compute metrics ---
+                    metrics_result = None
+                    if metrics_module is not None:
+                        metrics_fn = metrics_module
+                        if is_distributed and hasattr(metrics_module, 'module'):
+                            metrics_fn = metrics_module.module
+                        _ , metrics_result = metrics_fn(batch_inputs_dict, model_outputs)
+
+                    if gan_loss is not None:
+                        assert gradient_accum_steps == 1, "GAN loss with gradient accumulation is not supported yet."
+                        gen_loss_fn = gan_loss
+                        if is_distributed and hasattr(gan_loss, 'module'):
+                            gen_loss_fn = gan_loss.module
+                        gen_loss = gen_loss_fn.generator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
+                        loss += gen_loss * config.gan_loss.gen_loss_weight
+                        losses['gen_loss'] = gen_loss
+                        losses['disc_loss'] = loss_disc
+
+                
+                (loss / gradient_accum_steps).backward()
             optimizer.step()
+            optimizer.zero_grad()
+
+            if is_distributed:
+                torch.cuda.synchronize()
             
             epoch_loss += loss.item()
             global_step += 1
