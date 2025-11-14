@@ -314,6 +314,11 @@ def train(config):
     # Create infinite generator
     data_generator = inf_gen()
 
+    lr_scheduler = None
+    if 'lr_scheduler' in config.train:
+        lr_scheduler = build_class(config.train.lr_scheduler, extra_args=dict(optimizer=optimizer, total_iterations=iterations_per_epoch*config.train.epochs))
+
+
     # Make sure save directory exists
     if is_master: # not use_ddp or local_rank == 0:
         os.makedirs(config.train.save_dir, exist_ok=True)
@@ -430,6 +435,9 @@ def train(config):
             if grad_clip_enabled:
                 grad_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
                 grad_norm = grad_norm_tensor  # GPU tensor -> CPU float (note: cpu-gpu sync point)
+
+            if lr_scheduler is not None:
+                lr_scheduler.step(global_step)
 
             optimizer.step()
             optimizer.zero_grad()

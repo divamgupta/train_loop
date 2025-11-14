@@ -29,6 +29,7 @@ def get_all_param_names(model , names):
 class MultiOptimizer:
     def __init__(self, **optimizers):
         self.optimizers = optimizers
+        self.type = 'multi'
     
     def zero_grad(self):
         for opt in self.optimizers.values():
