@@ -26,6 +26,27 @@ from .evaluate_module import evaluate_loss
 from .utils.download import download_file
 from contextlib import nullcontext
 
+
+
+def get_compiled_model_with_loss(model, loss_function, device):
+    """
+    Wraps the model and loss function into a single callable for compilation.
+    """
+    class ModelWithLoss(torch.nn.Module):
+        def __init__(self, model, loss_function):
+            super(ModelWithLoss, self).__init__()
+        
+        def forward(self, batch_inputs):
+            model_outputs = model(batch_inputs)
+            loss, losses = loss_function(batch_inputs, model_outputs)
+            return  loss , losses
+
+    model_with_loss = ModelWithLoss(model, loss_function)
+    model_with_loss.to(device)
+    compiled_model_with_loss = torch.compile(model_with_loss, dynamic=False)
+    return compiled_model_with_loss
+
+
 def train(config):
 
     if config.train.get('pt_single_threaded', True):
@@ -43,6 +64,10 @@ def train(config):
     find_unused_parameters = config.train.get('find_unused_parameters', True)  
 
     is_compile_model = config.train.get('compile_model', False)
+    is_compile_model_with_loss = config.train.get('is_compile_model_with_loss', False)
+
+    if is_compile_model_with_loss:
+        assert is_compile_model, "If compiling model with loss, 'compile_model' must be True."
 
     if use_ddp:
         assert world_size == n_gpus
@@ -101,12 +126,35 @@ def train(config):
 
     model = build_class(config.model)
     model.to(device)
+
+    if 'name' in config.losses:
+        loss_function = build_class(config.losses)
+    else:
+        loss_function = LossModule(**config.losses)
+
+    if 'metrics' in config:
+        if 'name' in config.metrics:
+            metrics_module = build_class(config.metrics)
+        else:
+            metrics_module = LossModule(**config.metrics)
+    else:
+        metrics_module = None
+
+    model_with_loss = None
     if is_compile_model:
-        model = torch.compile(model, dynamic=False) 
+        if is_compile_model_with_loss:
+            model_with_loss = get_compiled_model_with_loss(model, loss_function, device)
+        else:
+            model = torch.compile(model, dynamic=False) 
+    
     if use_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank,  find_unused_parameters=find_unused_parameters)
+        if model_with_loss is not None:
+            model_with_loss = DDP(model_with_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
     elif n_gpus > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(n_gpus)))
+        if model_with_loss is not None:
+            model_with_loss = torch.nn.DataParallel(model_with_loss, device_ids=list(range(n_gpus)))
 
     if is_master:
         print("Model Summary:")
@@ -185,22 +233,8 @@ def train(config):
     if gan_loss is not None:
         disc_optimizer = get_opt(gan_loss, config.train.gan_optimizer, print_summary=is_master)
 
-    if 'name' in config.losses:
-        loss_function = build_class(config.losses)
-    else:
-        loss_function = LossModule(**config.losses)
-
-    if 'metrics' in config:
-        if 'name' in config.metrics:
-            metrics_module = build_class(config.metrics)
-        else:
-            metrics_module = LossModule(**config.metrics)
-    else:
-        metrics_module = None
-
     # Track best validation loss for saving best model
     best_val_loss = float('inf')
-
     
 
     # Handle checkpoint resuming
@@ -279,6 +313,7 @@ def train(config):
 
     # Put models in training/eval mode
     model.train()
+
     # If extra models and gan_loss, set train mode
     if gan_loss is not None:
         gan_loss.train()
@@ -329,7 +364,10 @@ def train(config):
                 dataset.post_process_batch(batch_inputs_dict)
             
             with autocast_ctx:
-                model_outputs = model(batch_inputs_dict)
+                if model_with_loss is not None:
+                    loss, losses = model_with_loss(batch_inputs_dict)
+                else:
+                    model_outputs = model(batch_inputs_dict)
 
                 if gan_loss is not None:
                     # For DataParallel, access .module if needed
@@ -341,10 +379,11 @@ def train(config):
                     loss_disc.backward(retain_graph=True)
                     disc_optimizer.step()
 
-                loss_fn = loss_function
-                if is_distributed and hasattr(loss_function, 'module'):
-                    loss_fn = loss_function.module
-                loss, losses = loss_fn(batch_inputs_dict, model_outputs)
+                if model_with_loss is None:
+                    loss_fn = loss_function
+                    if is_distributed and hasattr(loss_function, 'module'):
+                        loss_fn = loss_function.module
+                    loss, losses = loss_fn(batch_inputs_dict, model_outputs)
 
                 # --- Compute metrics ---
                 metrics_result = None
