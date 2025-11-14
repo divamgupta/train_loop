@@ -149,12 +149,8 @@ def train(config):
     
     if use_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank,  find_unused_parameters=find_unused_parameters)
-        if model_with_loss is not None:
-            model_with_loss = DDP(model_with_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
     elif n_gpus > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(n_gpus)))
-        if model_with_loss is not None:
-            model_with_loss = torch.nn.DataParallel(model_with_loss, device_ids=list(range(n_gpus)))
 
     if is_master:
         print("Model Summary:")
@@ -228,7 +224,10 @@ def train(config):
 
     # Load checkpoint if specified
     start_epoch = 0
-    optimizer = get_opt(model, config.train.optimizer, print_summary=is_master)
+    if is_distributed:
+        optimizer = get_opt(model.module, config.train.optimizer, print_summary=is_master)
+    else:
+        optimizer = get_opt(model, config.train.optimizer, print_summary=is_master)
     disc_optimizer = None
     if gan_loss is not None:
         disc_optimizer = get_opt(gan_loss, config.train.gan_optimizer, print_summary=is_master)
