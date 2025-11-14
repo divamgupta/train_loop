@@ -68,6 +68,8 @@ def train(config):
     is_compile_model = config.train.get('compile_model', False)
     is_compile_model_with_loss = config.train.get('is_compile_model_with_loss', False)
 
+    grad_clip_value = config.train.get('grad_clip_value', 0)
+
     
 
     if is_compile_model_with_loss:
@@ -423,6 +425,12 @@ def train(config):
 
                 
                 (loss / gradient_accum_steps).backward()
+
+            grad_clip_enabled = grad_clip_value > 0.0
+            if grad_clip_enabled:
+                grad_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
+                grad_norm = grad_norm_tensor  # GPU tensor -> CPU float (note: cpu-gpu sync point)
+
             optimizer.step()
             optimizer.zero_grad()
 
@@ -435,6 +443,10 @@ def train(config):
             # Update rolling average for each loss component
             losses_plus_metrics = losses.copy()
             losses_plus_metrics.update(metrics_result or {})
+
+            if grad_clip_enabled:
+                losses_plus_metrics['grad_norm'] = grad_norm
+
             for k, v in losses_plus_metrics.items():
                 if k not in loss_history:
                     loss_history[k] = []
