@@ -24,6 +24,7 @@ from .utils.model_loading import get_latest_checkpoint
 from .utils.model_utils import move_to_device
 from .evaluate_module import evaluate_loss
 from .utils.download import download_file
+from contextlib import nullcontext
 
 def train(config):
 
@@ -40,6 +41,8 @@ def train(config):
     effective_batch_size = config.train.batch_size * n_gpus  
 
     find_unused_parameters = config.train.get('find_unused_parameters', True)  
+
+    is_compile_model = config.train.get('compile_model', False)
 
     if use_ddp:
         assert world_size == n_gpus
@@ -90,12 +93,27 @@ def train(config):
 
     is_distributed = use_ddp or n_gpus > 1
 
+    if config.train.get("use_bfloat16_autocast", False):
+        autocast_ctx = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16)
+    else:
+        autocast_ctx = nullcontext()
+
+
     model = build_class(config.model)
     model.to(device)
+    if is_compile_model:
+        model = torch.compile(model, dynamic=False) 
     if use_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank,  find_unused_parameters=find_unused_parameters)
     elif n_gpus > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(n_gpus)))
+
+    if is_master:
+        print("Model Summary:")
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Total parameters: {total_params/(1024**2):.2f} M")
+        print(f"Trainable parameters: {trainable_params/(1024**2):.2f} M")
 
     extra_models = {}
     if 'extra_models' in config and config.extra_models is not None:
@@ -287,7 +305,8 @@ def train(config):
             if "summary_functions" in config:
                 for func in config.summary_functions:
                     summary_func = build_class(func)
-                    summary_func.run(model, dataset, config.train.save_dir, epoch)
+                    with autocast_ctx:
+                        summary_func.run(model, dataset, config.train.save_dir, epoch)
         
         if use_tqdm:
             progress_bar = tqdm(range(iterations_per_epoch), desc=f"Epoch {epoch+1}/{config.train.epochs} - Avg Loss: 0.000000")
@@ -309,40 +328,40 @@ def train(config):
             if hasattr(dataset , 'post_process_batch'):
                 dataset.post_process_batch(batch_inputs_dict)
             
+            with autocast_ctx:
+                model_outputs = model(batch_inputs_dict)
 
-            model_outputs = model(batch_inputs_dict)
+                if gan_loss is not None:
+                    # For DataParallel, access .module if needed
+                    disc_loss_fn = gan_loss
+                    if is_distributed and hasattr(gan_loss, 'module'):
+                        disc_loss_fn = gan_loss.module
+                    loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
+                    disc_optimizer.zero_grad()
+                    loss_disc.backward(retain_graph=True)
+                    disc_optimizer.step()
 
-            if gan_loss is not None:
-                # For DataParallel, access .module if needed
-                disc_loss_fn = gan_loss
-                if is_distributed and hasattr(gan_loss, 'module'):
-                    disc_loss_fn = gan_loss.module
-                loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
-                disc_optimizer.zero_grad()
-                loss_disc.backward(retain_graph=True)
-                disc_optimizer.step()
+                loss_fn = loss_function
+                if is_distributed and hasattr(loss_function, 'module'):
+                    loss_fn = loss_function.module
+                loss, losses = loss_fn(batch_inputs_dict, model_outputs)
 
-            loss_fn = loss_function
-            if is_distributed and hasattr(loss_function, 'module'):
-                loss_fn = loss_function.module
-            loss, losses = loss_fn(batch_inputs_dict, model_outputs)
+                # --- Compute metrics ---
+                metrics_result = None
+                if metrics_module is not None:
+                    metrics_fn = metrics_module
+                    if is_distributed and hasattr(metrics_module, 'module'):
+                        metrics_fn = metrics_module.module
+                    _ , metrics_result = metrics_fn(batch_inputs_dict, model_outputs)
 
-            # --- Compute metrics ---
-            metrics_result = None
-            if metrics_module is not None:
-                metrics_fn = metrics_module
-                if is_distributed and hasattr(metrics_module, 'module'):
-                    metrics_fn = metrics_module.module
-                _ , metrics_result = metrics_fn(batch_inputs_dict, model_outputs)
-
-            if gan_loss is not None:
-                gen_loss_fn = gan_loss
-                if is_distributed and hasattr(gan_loss, 'module'):
-                    gen_loss_fn = gan_loss.module
-                gen_loss = gen_loss_fn.generator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
-                loss += gen_loss * config.gan_loss.gen_loss_weight
-                losses['gen_loss'] = gen_loss
-                losses['disc_loss'] = loss_disc
+                if gan_loss is not None:
+                    gen_loss_fn = gan_loss
+                    if is_distributed and hasattr(gan_loss, 'module'):
+                        gen_loss_fn = gan_loss.module
+                    gen_loss = gen_loss_fn.generator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
+                    loss += gen_loss * config.gan_loss.gen_loss_weight
+                    losses['gen_loss'] = gen_loss
+                    losses['disc_loss'] = loss_disc
 
             optimizer.zero_grad()
             loss.backward()
@@ -383,30 +402,31 @@ def train(config):
             
             # Run validation if needed
             if is_master:
-                if val_dataloader is not None and eval_frequency > 0 and global_step % eval_frequency == 0:
-                    val_loss_fn = loss_function
-                    if is_distributed  and hasattr(loss_function, 'module'):
-                        val_loss_fn = loss_function.module
-                    val_loss, val_loss_components = evaluate_loss(model, val_dataloader, val_loss_fn, device)
+                with autocast_ctx:
+                    if val_dataloader is not None and eval_frequency > 0 and global_step % eval_frequency == 0:
+                        val_loss_fn = loss_function
+                        if is_distributed  and hasattr(loss_function, 'module'):
+                            val_loss_fn = loss_function.module
+                        val_loss, val_loss_components = evaluate_loss(model, val_dataloader, val_loss_fn, device)
 
-                    # get metrics also 
-                    if metrics_module is not None:
-                        metrics_fn = metrics_module
-                        if is_distributed and hasattr(metrics_module, 'module'):
-                            metrics_fn = metrics_module.module
-                        _ , val_metrics = evaluate_loss(model, val_dataloader, metrics_fn, device)
-                        val_loss_components.update(val_metrics)
-                    val_loss_components['total_loss'] = val_loss
-                    
-                    # Append validation loss to jsonl file
-                    val_loss_components['step'] = global_step
-                    val_loss_components['epoch'] = epoch
-                    val_loss_file = os.path.join(config.train.save_dir, 'val_loss.jsonl')
-                    with open(val_loss_file, 'a') as f:
-                        f.write(json.dumps(val_loss_components) + '\n')
-                    
-                    print(f"Validation Loss at step {global_step}: {val_loss:.6f}")
-                    print(f"Validation Loss Components: {val_loss_components}")
+                        # get metrics also 
+                        if metrics_module is not None:
+                            metrics_fn = metrics_module
+                            if is_distributed and hasattr(metrics_module, 'module'):
+                                metrics_fn = metrics_module.module
+                            _ , val_metrics = evaluate_loss(model, val_dataloader, metrics_fn, device)
+                            val_loss_components.update(val_metrics)
+                        val_loss_components['total_loss'] = val_loss
+                        
+                        # Append validation loss to jsonl file
+                        val_loss_components['step'] = global_step
+                        val_loss_components['epoch'] = epoch
+                        val_loss_file = os.path.join(config.train.save_dir, 'val_loss.jsonl')
+                        with open(val_loss_file, 'a') as f:
+                            f.write(json.dumps(val_loss_components) + '\n')
+                        
+                        print(f"Validation Loss at step {global_step}: {val_loss:.6f}")
+                        print(f"Validation Loss Components: {val_loss_components}")
             
             current_avg_loss = epoch_loss / (batch_idx + 1)
             # Calculate rolling average for each loss component
