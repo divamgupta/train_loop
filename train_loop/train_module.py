@@ -166,10 +166,12 @@ def train(config):
     elif n_gpus > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(n_gpus)))
 
+    model_module = model.module if is_distributed else model
+
     if is_master:
         print("Model Summary:")
-        total_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model_module.parameters())
+        trainable_params = sum(p.numel() for p in model_module.parameters() if p.requires_grad)
         print(f"Total parameters: {total_params/(1024**2):.2f} M")
         print(f"Trainable parameters: {trainable_params/(1024**2):.2f} M")
 
@@ -211,19 +213,10 @@ def train(config):
     # Initialize validation dataset if specified in config
     val_dataset = None
     val_dataloader = None
-    if 'val_dataset' in config:
-        val_dataset = build_class(config.val_dataset)
-        if use_ddp:
-            val_sampler = DistributedSampler(val_dataset, shuffle=False)
-            val_dataloader = DataLoader(
-                val_dataset, 
-                batch_size=config.train.get('val_batch_size', config.train.batch_size),
-                collate_fn=val_dataset.collate_fn, 
-                num_workers=config.train.get('val_num_workers', config.train.num_workers),
-                shuffle=False,
-                sampler=val_sampler
-            )
-        else:
+    if is_master:
+        if 'val_dataset' in config:
+            val_dataset = build_class(config.val_dataset)
+            # since validation happens on master, we do not use DistributedSampler
             val_dataloader = DataLoader(
                 val_dataset, 
                 batch_size=config.train.get('val_batch_size', config.train.batch_size),
@@ -238,10 +231,8 @@ def train(config):
 
     # Load checkpoint if specified
     start_epoch = 0
-    if is_distributed:
-        optimizer = get_opt(model.module, config.train.optimizer, print_summary=is_master)
-    else:
-        optimizer = get_opt(model, config.train.optimizer, print_summary=is_master)
+    optimizer = get_opt(model_module, config.train.optimizer, print_summary=is_master)
+   
     disc_optimizer = None
     if gan_loss is not None:
         disc_optimizer = get_opt(gan_loss, config.train.gan_optimizer, print_summary=is_master)
@@ -257,10 +248,7 @@ def train(config):
         if latest_checkpoint:
             checkpoint = torch.load(latest_checkpoint, map_location=device)
             # For DataParallel/DDP, load state_dict to .module
-            if is_distributed: # (use_ddp or n_gpus > 1) and hasattr(model, "module"):
-                model.module.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                model.load_state_dict(checkpoint['model_state_dict'])
+            model_module.load_state_dict(checkpoint['model_state_dict'])
             if 'optimizer_state_dict' in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = latest_epoch
@@ -284,10 +272,8 @@ def train(config):
                 
         # Manual checkpoint path specified
         checkpoint = torch.load(config.train.resume_checkpoint_path, map_location=device)
-        if is_distributed: # (use_ddp or n_gpus > 1) and hasattr(model, "module"):
-            model.module.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            model.load_state_dict(checkpoint['model_state_dict'])
+        model_module.load_state_dict(checkpoint['model_state_dict'])
+        
         if 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if config.train.get('resume_epoch_num') is not None:
@@ -340,6 +326,8 @@ def train(config):
     eval_frequency = config.train.get('num_eval_every_steps', 1000)
     # Calculate global_step based on start_epoch
     global_step = start_epoch * iterations_per_epoch
+
+    
     
     # Training loop
     for epoch in range(start_epoch, config.train.epochs):
@@ -359,7 +347,9 @@ def train(config):
                 for func in config.summary_functions:
                     summary_func = build_class(func)
                     with autocast_ctx:
-                        summary_func.run(model, dataset, config.train.save_dir, epoch)
+                        summary_func.run(model_module, dataset, config.train.save_dir, epoch)
+        if is_distributed:
+            torch.distributed.barrier()
         
         if use_tqdm:
             progress_bar = tqdm(range(iterations_per_epoch), desc=f"Epoch {epoch+1}/{config.train.epochs} - Avg Loss: 0.000000")
@@ -371,20 +361,26 @@ def train(config):
 
             iter_start_time = time.time()
 
-            if is_distributed:
-                torch.cuda.synchronize()
+            torch.cuda.synchronize()
 
             for mini_i in range(gradient_accum_steps):
                 batch_inputs_dict = next(data_generator)
 
                 if batch_inputs_dict is None:
                     print("Batch is None, skipping...")
+
+                    if use_ddp:
+                        raise ValueError("Dataloader returned None will make it go out of sync.")
+
                     continue
                 
                 batch_inputs_dict = move_to_device(batch_inputs_dict, device)
 
                 if hasattr(dataset , 'post_process_batch'):
                     dataset.post_process_batch(batch_inputs_dict)
+
+                if is_master:
+                    time.sleep(1)
                 
                 
                 with autocast_ctx:
@@ -442,8 +438,7 @@ def train(config):
             optimizer.step()
             optimizer.zero_grad()
 
-            if is_distributed:
-                torch.cuda.synchronize()
+            torch.cuda.synchronize()
             
             epoch_loss += loss.item()
             global_step += 1
@@ -472,43 +467,42 @@ def train(config):
                 train_loss_file = os.path.join(config.train.save_dir, 'train_loss.jsonl')
                 with open(train_loss_file, 'a') as f:
                     f.write(json.dumps(train_loss_components) + '\n')
-
-            # if at epoch 0 and iter 400, if losss is high then reset the training! 
-            loss_check_iter = config.train.get('loss_check_iter', 400)
-            if epoch == 0 and batch_idx == loss_check_iter: #TODO make it configurable
-                if 'audio_l1' in loss_history:
-                    l = sum(loss_history['audio_l1']) / len(loss_history['audio_l1'])
-                    if l > 0.03:
-                        print("Loss is too high, restarting training.")
-                        return train(config) #todo make this better
             
             # Run validation if needed
-            if is_master:
-                with autocast_ctx:
-                    if val_dataloader is not None and eval_frequency > 0 and global_step % eval_frequency == 0:
-                        val_loss_fn = loss_function
-                        if is_distributed  and hasattr(loss_function, 'module'):
-                            val_loss_fn = loss_function.module
-                        val_loss, val_loss_components = evaluate_loss(model, val_dataloader, val_loss_fn, device)
+            if eval_frequency > 0 and global_step % eval_frequency == 0:
+                if is_distributed:
+                    torch.distributed.barrier()
+                
+                if val_dataloader is not None:
+                    with autocast_ctx:
+                        if is_master:
+                            # time.sleep(10)
+                            
+                            val_loss_fn = loss_function
+                            if is_distributed  and hasattr(loss_function, 'module'):
+                                val_loss_fn = loss_function.module
+                            val_loss, val_loss_components = evaluate_loss(model_module, val_dataloader, val_loss_fn, device)
+                            # get metrics also 
+                            if metrics_module is not None:
+                                metrics_fn = metrics_module
+                                if is_distributed and hasattr(metrics_module, 'module'):
+                                    metrics_fn = metrics_module.module
+                                _ , val_metrics = evaluate_loss(model_module, val_dataloader, metrics_fn, device)
+                                val_loss_components.update(val_metrics)
+                            val_loss_components['total_loss'] = val_loss
+                            
+                            # Append validation loss to jsonl file
+                            val_loss_components['step'] = global_step
+                            val_loss_components['epoch'] = epoch
+                            val_loss_file = os.path.join(config.train.save_dir, 'val_loss.jsonl')
+                            with open(val_loss_file, 'a') as f:
+                                f.write(json.dumps(val_loss_components) + '\n')
+                            
+                            print(f"Validation Loss at step {global_step}: {val_loss:.6f}")
+                            print(f"Validation Loss Components: {val_loss_components}")
 
-                        # get metrics also 
-                        if metrics_module is not None:
-                            metrics_fn = metrics_module
-                            if is_distributed and hasattr(metrics_module, 'module'):
-                                metrics_fn = metrics_module.module
-                            _ , val_metrics = evaluate_loss(model, val_dataloader, metrics_fn, device)
-                            val_loss_components.update(val_metrics)
-                        val_loss_components['total_loss'] = val_loss
-                        
-                        # Append validation loss to jsonl file
-                        val_loss_components['step'] = global_step
-                        val_loss_components['epoch'] = epoch
-                        val_loss_file = os.path.join(config.train.save_dir, 'val_loss.jsonl')
-                        with open(val_loss_file, 'a') as f:
-                            f.write(json.dumps(val_loss_components) + '\n')
-                        
-                        print(f"Validation Loss at step {global_step}: {val_loss:.6f}")
-                        print(f"Validation Loss Components: {val_loss_components}")
+                if is_distributed:
+                    torch.distributed.barrier()
             
             current_avg_loss = epoch_loss / (batch_idx + 1)
             # Calculate rolling average for each loss component
@@ -533,7 +527,7 @@ def train(config):
         if is_master:
             if not config.train.get('no_save_weights', False):
                 checkpoint_path = os.path.join(config.train.save_dir, f'model_epoch_{epoch+1}.pt')
-                state_dict = model.module.state_dict() if is_distributed else model.state_dict()
+                state_dict = model_module.state_dict()
                 if not config.train.get('no_save_epoch_wise_weights', False):
                     torch.save({
                         'epoch': epoch + 1,
