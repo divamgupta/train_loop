@@ -384,10 +384,6 @@ def train(config):
 
                 if hasattr(dataset , 'post_process_batch'):
                     dataset.post_process_batch(batch_inputs_dict)
-
-                if is_master:
-                    time.sleep(1)
-                
                 
                 with autocast_ctx:
                     if model_with_loss is not None:
