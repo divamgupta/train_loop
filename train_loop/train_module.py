@@ -386,6 +386,9 @@ def train(config):
                     dataset.post_process_batch(batch_inputs_dict)
                 
                 with autocast_ctx:
+
+                    losses = {}
+                    model_outputs = None
                     if model_with_loss is not None:
                         loss, losses = model_with_loss(batch_inputs_dict)
                     else:
@@ -397,12 +400,14 @@ def train(config):
                         disc_loss_fn = gan_loss
                         if is_distributed and hasattr(gan_loss, 'module'):
                             disc_loss_fn = gan_loss.module
+                        assert model_outputs is not None, "Model outputs should not be None when using GAN loss."
                         loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
                         disc_optimizer.zero_grad()
                         loss_disc.backward(retain_graph=True)
                         disc_optimizer.step()
 
                     if model_with_loss is None:
+                        assert model_outputs is not None, "Model outputs should not be None when using loss function."
                         loss_fn = loss_function
                         if is_distributed and hasattr(loss_function, 'module'):
                             loss_fn = loss_function.module
@@ -411,6 +416,7 @@ def train(config):
                     # --- Compute metrics ---
                     metrics_result = None
                     if metrics_module is not None:
+                        assert model_outputs is not None, "Model outputs should not be None when computing metrics."
                         metrics_fn = metrics_module
                         if is_distributed and hasattr(metrics_module, 'module'):
                             metrics_fn = metrics_module.module
