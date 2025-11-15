@@ -35,10 +35,12 @@ def get_compiled_model_with_loss(model, loss_function, device):
     class ModelWithLoss(torch.nn.Module):
         def __init__(self, model, loss_function):
             super(ModelWithLoss, self).__init__()
+            self.model = model
+            self.loss_function = loss_function
         
         def forward(self, batch_inputs):
-            model_outputs = model(batch_inputs)
-            loss, losses = loss_function(batch_inputs, model_outputs)
+            model_outputs = self.model(batch_inputs)
+            loss, losses = self.loss_function(batch_inputs, model_outputs)
             return  loss , losses
 
     model_with_loss = ModelWithLoss(model, loss_function)
@@ -163,8 +165,12 @@ def train(config):
     
     if use_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank,  find_unused_parameters=find_unused_parameters)
+        if model_with_loss is not None:
+            model_with_loss = DDP(model_with_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
     elif n_gpus > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(n_gpus)))
+        if model_with_loss is not None:
+            model_with_loss = torch.nn.DataParallel(model_with_loss, device_ids=list(range(n_gpus)))
 
     model_module = model.module if is_distributed else model
 
