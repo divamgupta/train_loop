@@ -237,7 +237,18 @@ def train(config):
 
     # Load checkpoint if specified
     start_epoch = 0
-    optimizer = get_opt(model_module, config.train.optimizer, print_summary=is_master)
+    if config.train.get('get_optimizer_fn_name', None) is not None:
+        get_opt_fn_name = config.train.get('get_optimizer_fn_name')
+        assert get_opt_fn_name.startswith("__model__."), "For now get_optimizer_fn_name must start with '__model__.'"
+        get_opt_fn_name = get_opt_fn_name.replace("__model__.", "")
+        if hasattr(model_module, get_opt_fn_name):
+            get_opt_model_fn = getattr(model_module, get_opt_fn_name)
+            optimizer = get_opt_model_fn()
+            print("Loaded optimizer from model function:", get_opt_fn_name)
+        else:
+            raise ValueError(f"Model does not have method {get_opt_fn_name} to get optimizer.")
+    else:
+        optimizer = get_opt(model_module, config.train.optimizer, print_summary=is_master)
    
     disc_optimizer = None
     if gan_loss is not None:
