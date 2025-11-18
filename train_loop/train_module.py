@@ -263,13 +263,15 @@ def train(config):
         # Auto-find latest checkpoint
         latest_checkpoint, latest_epoch = get_latest_checkpoint(config.train.save_dir)
         if latest_checkpoint:
-            checkpoint = torch.load(latest_checkpoint, map_location=device)
+            checkpoint = torch.load(latest_checkpoint, map_location=device , weights_only=False)
             # For DataParallel/DDP, load state_dict to .module
             model_module.load_state_dict(checkpoint['model_state_dict'])
             if 'optimizer_state_dict' in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = latest_epoch
             print(f"Auto-resuming from latest checkpoint: {latest_checkpoint} at epoch {start_epoch}")
+
+            del checkpoint  # free memory
         else:
             print("No checkpoints found for resuming, starting from scratch")
     elif config.train.get('resume_checkpoint_path') and (os.path.exists(config.train.resume_checkpoint_path) or config.train.resume_checkpoint_path.startswith("http")):
@@ -288,7 +290,7 @@ def train(config):
             config.train.resume_checkpoint_path = checkpoint_path
                 
         # Manual checkpoint path specified
-        checkpoint = torch.load(config.train.resume_checkpoint_path, map_location=device)
+        checkpoint = torch.load(config.train.resume_checkpoint_path, map_location=device, weights_only=False)
         model_module.load_state_dict(checkpoint['model_state_dict'])
         
         if 'optimizer_state_dict' in checkpoint:
@@ -298,6 +300,10 @@ def train(config):
         elif 'epoch' in checkpoint:
             start_epoch = checkpoint['epoch']
         print(f"Resuming from specified checkpoint at epoch {start_epoch}")
+        
+        del checkpoint  # free memory
+
+
 
     def inf_gen():
         while True:
@@ -319,7 +325,7 @@ def train(config):
 
     lr_scheduler = None
     if 'lr_scheduler' in config.train:
-        lr_scheduler = build_class(config.train.lr_scheduler, extra_args=dict(optimizer=optimizer, total_iterations=iterations_per_epoch*config.train.epochs))
+        lr_scheduler = build_class(config.train.lr_scheduler, extra_args=dict(optimizer=optimizer ))
 
 
     # Make sure save directory exists
@@ -360,7 +366,7 @@ def train(config):
         rolling_window = 30
 
         if is_master:
-            if "summary_functions" in config:
+            if "summary_functions" in config and config.summary_functions is not None:
                 for func in config.summary_functions:
                     summary_func = build_class(func)
                     with autocast_ctx:

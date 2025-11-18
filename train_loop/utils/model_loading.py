@@ -20,7 +20,7 @@ def get_latest_checkpoint(save_dir):
     # First check for model_latest.pt
     latest_path = os.path.join(save_dir, 'model_latest.pt')
     if os.path.exists(latest_path):
-        checkpoint = torch.load(latest_path, map_location='cpu')
+        checkpoint = torch.load(latest_path, map_location='cpu', weights_only=False)
         epoch_num = checkpoint['epoch']
         return latest_path, epoch_num
        
