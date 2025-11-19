@@ -2,7 +2,7 @@ import torch
 from .utils.model_utils import move_to_device
 from tqdm import tqdm
 
-def evaluate_loss(model, val_dataloader, loss_function, device):
+def evaluate_loss(model, val_dataloader, loss_function, device, num_val_steps=-1, use_tqdm=True):
     """
     Evaluate the model on the validation dataset.
     
@@ -20,11 +20,22 @@ def evaluate_loss(model, val_dataloader, loss_function, device):
     num_batches = 0
 
     dataset = val_dataloader.dataset
-    
+    i = 0 
+
+    if use_tqdm:
+        bar = tqdm(val_dataloader, desc="Validation")
+    else:
+        bar = val_dataloader
+
     with torch.no_grad():
-        for batch_inputs_dict in tqdm(val_dataloader, desc="Validation"):
+        for batch_inputs_dict in bar:
             if batch_inputs_dict is None:
                 continue
+
+            if num_val_steps > 0 and i > num_val_steps:
+                break
+        
+            i += 1
                 
             batch_inputs_dict = move_to_device(batch_inputs_dict, device)
             
