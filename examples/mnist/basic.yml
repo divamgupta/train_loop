@@ -67,7 +67,7 @@ train:
   gradient_accum_steps: 2
 
   use_tqdm: true
-  grad_clip_value: 1.0 
+  grad_clip_value: 0
   use_bfloat16_autocast: True 
 
   compile_model: true

@@ -88,6 +88,7 @@ def train(config):
         config.train.num_validation_steps = 10
         config.train.checkpoint_save_frequency = 6 
         config.train.summary_frequency = 6
+        config.train.log_frequency = 3
 
         # if exists delete the dir 
         if is_master:
@@ -352,6 +353,8 @@ def train(config):
 
     summary_frequency = config.train.get('summary_frequency', 1000)
     eval_frequency = config.train.get('num_eval_every_steps', 1000)
+    log_frequency = config.train.get('log_frequency', 30)
+    rolling_window = config.train.get('metrics_rolling_window', log_frequency)
 
     if use_tqdm:
         progress_bar = tqdm(range(n_steps_done, n_total_steps), desc=f"Step {n_steps_done}/{n_total_steps} - Avg Loss: 0.000000")
@@ -360,7 +363,6 @@ def train(config):
 
     iter_times = []
     loss_history = {}
-    rolling_window = 30
 
     # Training loop
     for _ in progress_bar:
@@ -482,7 +484,7 @@ def train(config):
                 loss_history[k].pop(0)
         
         # Log training loss to jsonl file every rolling_window steps
-        if n_steps_done % rolling_window == 0:
+        if n_steps_done % log_frequency == 0:
             train_loss_components = {k: sum(v)/len(v) for k, v in loss_history.items()}
             train_loss_components['step'] = n_steps_done
             
