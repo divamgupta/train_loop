@@ -467,6 +467,7 @@ def train(config):
         torch.cuda.synchronize()
         
         n_steps_done += 1
+        iter_end_time = time.time()
         
         # Update rolling average for each loss component
         losses_plus_metrics = losses.copy()
@@ -532,7 +533,6 @@ def train(config):
         if use_tqdm:
             progress_bar.set_description(f"Step {n_steps_done}/{n_total_steps} -  {loss_str}")
         else:
-            iter_end_time = time.time()
             iter_time = iter_end_time - iter_start_time
             iter_times.append(iter_time)
             avg_iter_time = sum(iter_times) / len(iter_times)

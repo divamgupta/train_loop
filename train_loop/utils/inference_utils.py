@@ -1,6 +1,7 @@
 import os
 import torch
 from omegaconf import OmegaConf
+
 from .model_loading import get_latest_checkpoint
 from .dynamic_import import build_class
 
@@ -20,6 +21,7 @@ def load_model_from_config_path(config):
         config = os.path.join(config, "config.yaml")
 
     if isinstance(config, str):
+        OmegaConf.register_new_resolver("eval", eval)
         config = OmegaConf.load(config)
     # Build model using build_class
     model = build_class(config.model)

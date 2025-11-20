@@ -1,0 +1,128 @@
+
+n_embd: 1280
+
+
+model:
+  name: examples.nanochat.gpt.GPT
+  args:
+    config:
+      sequence_len : 2048
+      vocab_size : 65536
+      n_layer : 20
+      n_head : 10 # number of query heads
+      n_kv_head : 10 # number of key/value heads (MQA)
+      n_embd : ${n_embd}
+  ckpt_path: null
+
+orig_nanochat_path : /home/ubuntu/nanochat
+
+dataset:
+  name:  examples.nanochat.dataset.BasicTokensDL
+  args:
+    parquet_data_dir: ${orig_nanochat_path}/data/base_data
+    tokenizer_dir: ${orig_nanochat_path}/data/tokenizer
+    n_tokens: 2048
+    split: train
+
+
+val_dataset:
+  name: examples.nanochat.dataset.BasicTokensDL
+  args:
+    parquet_data_dir: ${orig_nanochat_path}/data/base_data
+    tokenizer_dir: ${orig_nanochat_path}/data/tokenizer
+    n_tokens: 2048
+    split: val
+    len: 400
+
+
+losses:
+
+  cce:
+    function_name: examples.nanochat.gpt.llm_cce_loss
+    weight: 1.0
+    src_key: out_logits
+    tgt_key: gt_output_ids
+    
+
+sanity: false
+
+
+embedding_lr : 0.2
+unembedding_lr : 0.004
+
+dmodel_lr_scale: ${eval:'(${n_embd} / 768) ** -0.5'}
+
+effective_batch_size : 256
+
+# LRs 
+# dmodel_lr_scale = (n_embd / 768) ** -0.5 = 0.7745
+#embedding_lr = 0.2 # learning rate for the embedding parameters (Adam)
+# unembedding_lr = 0.004
+# weight_decay = 0.0 
+# matrix_lr = 0.02 # learning rate for the matrix parameters (Muon)
+# grad_clip = 1.0 
+
+train:
+  batch_size: 32 # old versions of pytorch might give OOM ( pt 2.9.1+cu128 with 80GB GPU should work fine)
+  gradient_accum_steps: ${eval:'${effective_batch_size} // ${train.batch_size} // ${train.n_gpus}'}
+  
+  n_total_steps: 21500
+
+  num_eval_every_steps: 1000
+  checkpoint_save_frequency : 1000
+  summary_frequency: 1000
+
+  save_dir: /tmp/aa
+  device: cuda
+  resume_checkpoint_path: null
+  num_workers: 0
+
+  resume: false
+
+  n_gpus : 1 
+  use_ddp: false
+  find_unused_parameters: false
+  compile_model : true 
+  use_bfloat16_autocast : true 
+  is_compile_model_with_loss : true  
+  create_model_meta_init: true
+  grad_clip_value : 1.0
+ 
+ 
+  optimizer:
+    name: multi
+    optimizers:
+      embeds:
+        name: adamw
+        args:
+          weight_decay: 0.0
+          betas: [0.8, 0.95]
+          eps: 1e-10
+        param_groups:
+          - params: ["transformer.wte" ]
+            lr: ${eval:'${embedding_lr} * ${dmodel_lr_scale}'}  # embedding_lr * dmodel_lr_scale
+          - params: ["lm_head" ]
+            lr: ${eval:'${unembedding_lr} * ${dmodel_lr_scale}'}  # unembedding_lr * dmodel_lr_scale
+
+      matrix:
+        name: examples.nanochat.muon_opt.Muon
+        args:
+          lr: 0.02
+          momentum: 0.95
+        param_groups:
+          - params: ["transformer.h" ]
+            lr: 0.02
+
+  lr_scheduler:
+    name: examples.nanochat.lr_scheduler.AKLRScheduler
+    args:
+      warmup_ratio: 0.0 # It goes to 1 till the  warmup percentage of iterations. 
+      warmdown_ratio: 0.2 # for the last warm down percentage of iterations, it goes down to final_lr_frac at the end of training.
+      final_lr_frac: 0.0
+      muon_optimizer_name: matrix
+      total_iterations : 21500
+
+
+  
+  
+

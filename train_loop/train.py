@@ -2,6 +2,8 @@ import argparse
 import os
 import sys
 from omegaconf import OmegaConf
+
+
 from .train_module import train
 
 
@@ -11,6 +13,7 @@ def train_cli():
     parser.add_argument('overrides', nargs='*',
                         help='Override config values using dotpath notation (e.g., train.lr=0.001, model.hidden_size=256)')
     args = parser.parse_args()
+    OmegaConf.register_new_resolver("eval", eval)
     config = OmegaConf.load(args.config)
     
     # Apply config overrides using OmegaConf CLI
@@ -30,6 +33,7 @@ def train_cli():
         if override_config.get("validate_override_keys", True):
             validate_keys(override_config, config)
         config = OmegaConf.merge(config, override_config)
+        OmegaConf.resolve(config)
         print(f"Applied overrides: {args.overrides}")
 
     # --- DDP torchrun auto-restart logic ---
