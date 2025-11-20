@@ -1,16 +1,20 @@
 
-n_embd: 1280
+n_tokens: 2048
+num_layers: 20
+
+n_embd: ${eval:'${num_layers} * 64'}
+n_heads : ${eval:'max(1, (${n_embd} + 127) // 128)'}
 
 
 model:
   name: examples.nanochat.gpt.GPT
   args:
     config:
-      sequence_len : 2048
+      sequence_len : ${n_tokens}
       vocab_size : 65536
-      n_layer : 20
-      n_head : 10 # number of query heads
-      n_kv_head : 10 # number of key/value heads (MQA)
+      n_layer : ${num_layers}
+      n_head : ${n_heads} # number of query heads
+      n_kv_head : ${n_heads} # number of key/value heads (MQA)
       n_embd : ${n_embd}
   ckpt_path: null
 
@@ -21,7 +25,7 @@ dataset:
   args:
     parquet_data_dir: ${orig_nanochat_path}/data/base_data
     tokenizer_dir: ${orig_nanochat_path}/data/tokenizer
-    n_tokens: 2048
+    n_tokens: ${n_tokens}
     split: train
 
 
@@ -30,7 +34,7 @@ val_dataset:
   args:
     parquet_data_dir: ${orig_nanochat_path}/data/base_data
     tokenizer_dir: ${orig_nanochat_path}/data/tokenizer
-    n_tokens: 2048
+    n_tokens: ${n_tokens}
     split: val
     len: 400
 
@@ -54,13 +58,6 @@ dmodel_lr_scale: ${eval:'(${n_embd} / 768) ** -0.5'}
 
 effective_batch_size : 256
 
-# LRs 
-# dmodel_lr_scale = (n_embd / 768) ** -0.5 = 0.7745
-#embedding_lr = 0.2 # learning rate for the embedding parameters (Adam)
-# unembedding_lr = 0.004
-# weight_decay = 0.0 
-# matrix_lr = 0.02 # learning rate for the matrix parameters (Muon)
-# grad_clip = 1.0 
 
 train:
   batch_size: 32 # old versions of pytorch might give OOM ( pt 2.9.1+cu128 with 80GB GPU should work fine)
@@ -100,9 +97,9 @@ train:
           eps: 1e-10
         param_groups:
           - params: ["transformer.wte" ]
-            lr: ${eval:'${embedding_lr} * ${dmodel_lr_scale}'}  # embedding_lr * dmodel_lr_scale
+            lr: ${eval:'${embedding_lr} * ${dmodel_lr_scale}'} 
           - params: ["lm_head" ]
-            lr: ${eval:'${unembedding_lr} * ${dmodel_lr_scale}'}  # unembedding_lr * dmodel_lr_scale
+            lr: ${eval:'${unembedding_lr} * ${dmodel_lr_scale}'}
 
       matrix:
         name: examples.nanochat.muon_opt.Muon
@@ -120,7 +117,7 @@ train:
       warmdown_ratio: 0.2 # for the last warm down percentage of iterations, it goes down to final_lr_frac at the end of training.
       final_lr_frac: 0.0
       muon_optimizer_name: matrix
-      total_iterations : 21500
+      total_iterations : ${train.n_total_steps}
 
 
   
