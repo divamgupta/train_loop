@@ -388,7 +388,12 @@ def train(config):
         torch.cuda.synchronize()
 
         for mini_i in range(gradient_accum_steps):
-            batch_inputs_dict = next(data_generator)
+            
+            if config.train.get("debug_load_batch_only_once" , False):
+                if n_steps_done == 0 and mini_i == 0:
+                    batch_inputs_dict = next(data_generator)
+            else:
+                batch_inputs_dict = next(data_generator)
 
             if batch_inputs_dict is None:
                 print("Batch is None, skipping...")
