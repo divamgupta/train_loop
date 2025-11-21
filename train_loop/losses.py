@@ -129,18 +129,32 @@ def cross_entropy_classification_loss(batch, model_outs, src_key, tgt_key):
     class_ids = get_target(tgt_key, batch, model_outs)
     return F.cross_entropy(logits, class_ids)
 
-def accuracy_classification(batch, model_outs, src_key, tgt_key):
+def accuracy_classification(batch, model_outs, src_key, tgt_key, top_k=1):
     """
-    Accuracy metric for classification.
+    Accuracy metric for classification with top-k support.
     Args:
         batch: dict containing ground truth class IDs (tgt_key)
         model_outs: dict containing predicted logits (src_key)
         src_key: key for logits in model_outs
         tgt_key: key for class IDs in batch or model_outs
+        top_k: int, number of top predictions to consider (default: 1)
+               top_k=1 gives standard accuracy
+               top_k=5 gives top-5 accuracy, etc.
     Returns:
         Accuracy as a float tensor
     """
     logits = model_outs[src_key]
     class_ids = get_target(tgt_key, batch, model_outs)
-    preds = torch.argmax(logits, dim=-1)
-    return (preds == class_ids).float().mean()
+    
+    if top_k == 1:
+        # Standard accuracy (faster path)
+        preds = torch.argmax(logits, dim=-1)
+        return (preds == class_ids).float().mean()
+    else:
+        # Top-k accuracy
+        _, top_k_preds = torch.topk(logits, k=top_k, dim=-1)
+        # Expand class_ids to compare with each of the top-k predictions
+        class_ids_expanded = class_ids.unsqueeze(-1).expand_as(top_k_preds)
+        # Check if true class is in any of the top-k predictions
+        correct = (top_k_preds == class_ids_expanded).any(dim=-1)
+        return correct.float().mean()
