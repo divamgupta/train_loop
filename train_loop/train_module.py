@@ -51,7 +51,7 @@ def get_compiled_model_with_loss(model, loss_function, device):
 
 def train(config):
 
-    if config.train.get('pt_single_threaded', True):
+    if config.train.pt_single_threaded:
         torch.set_num_threads(1)
         torch.set_num_interop_threads(1)
 
@@ -59,16 +59,16 @@ def train(config):
         raise NotImplementedError("Epoch-based training is not supported in this training loop. Please use step-based training with 'n_total_steps' or 'n_total_samples'.")
 
     # DDP support
-    use_ddp = config.train.get('use_ddp', False)
+    use_ddp = config.train.use_ddp
     local_rank = int(os.environ.get('LOCAL_RANK', 0)) if use_ddp else 0
     world_size = int(os.environ.get('WORLD_SIZE', 1)) if use_ddp else 1
-    n_gpus = config.train.get('n_gpus', 1)
+    n_gpus = config.train.n_gpus
 
-    gradient_accum_steps = config.train.get('gradient_accum_steps', 1)
+    gradient_accum_steps = config.train.gradient_accum_steps
 
     effective_batch_size = config.train.batch_size * n_gpus * gradient_accum_steps
 
-    find_unused_parameters = config.train.get('find_unused_parameters', True)  
+    find_unused_parameters = config.train.find_unused_parameters
 
     if use_ddp:
         assert world_size == n_gpus
@@ -99,8 +99,8 @@ def train(config):
             time.sleep(2)  # Ensure all processes wait for dir deletion
 
 
-    n_total_steps = config.train.get('n_total_steps', -1)
-    n_total_samples = config.train.get('n_total_samples', -1)
+    n_total_steps = config.train.n_total_steps
+    n_total_samples = config.train.n_total_samples
     n_steps_done = 0
 
     if n_total_steps < 0 and n_total_samples < 0:
@@ -110,20 +110,20 @@ def train(config):
         n_total_steps = n_total_samples // effective_batch_size
 
 
-    is_compile_model = config.train.get('compile_model', False)
-    is_compile_model_with_loss = config.train.get('is_compile_model_with_loss', False)
+    is_compile_model = config.train.compile_model
+    is_compile_model_with_loss = config.train.is_compile_model_with_loss
 
-    grad_clip_value = config.train.get('grad_clip_value', 0)
+    grad_clip_value = config.train.grad_clip_value
 
     if is_compile_model_with_loss:
         assert is_compile_model, "If compiling model with loss, 'compile_model' must be True."
 
 
     out_config_path = os.path.join(config.train.save_dir, 'config.yaml')
-    if os.path.exists(out_config_path) and (not config.train.get('resume', False)):
+    if os.path.exists(out_config_path) and (not config.train.resume):
         raise FileExistsError(f"Config file {out_config_path} already exists. Please remove it or choose a different save directory.")
     
-    use_tqdm = config.train.get('use_tqdm', False )
+    use_tqdm = config.train.use_tqdm
     if use_ddp:
         use_tqdm = False
 
@@ -143,13 +143,13 @@ def train(config):
 
     is_distributed = use_ddp or n_gpus > 1
 
-    if config.train.get("use_bfloat16_autocast", False):
+    if config.train.use_bfloat16_autocast:
         autocast_ctx = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16)
     else:
         autocast_ctx = nullcontext()
 
 
-    if config.train.get('create_model_meta_init', False):
+    if config.train.create_model_meta_init:
         with torch.device("meta"):
             model = build_class(config.model)
         model.to_empty(device=device)
@@ -253,8 +253,8 @@ def train(config):
         val_dataset.extra_models = extra_models
 
     # Load checkpoint if specified
-    if config.train.get('get_optimizer_fn_name', None) is not None:
-        get_opt_fn_name = config.train.get('get_optimizer_fn_name')
+    if config.train.get_optimizer_fn_name is not None:
+        get_opt_fn_name = config.train.get_optimizer_fn_name
         assert get_opt_fn_name.startswith("__model__."), "For now get_optimizer_fn_name must start with '__model__.'"
         get_opt_fn_name = get_opt_fn_name.replace("__model__.", "")
         if hasattr(model_module, get_opt_fn_name):
@@ -271,7 +271,7 @@ def train(config):
         disc_optimizer = get_opt(gan_loss, config.train.gan_optimizer, print_summary=is_master)
     
     # Handle checkpoint resuming
-    if config.train.get('resume', False):
+    if config.train.resume:
         # Auto-find latest checkpoint
         latest_checkpoint, latest_n_steps = get_latest_checkpoint(config.train.save_dir)
         if latest_checkpoint:
@@ -286,7 +286,7 @@ def train(config):
             del checkpoint  # free memory
         else:
             print("No checkpoints found for resuming, starting from scratch")
-    elif config.train.get('resume_checkpoint_path') and (os.path.exists(config.train.resume_checkpoint_path) or config.train.resume_checkpoint_path.startswith("http")):
+    elif config.train.resume_checkpoint_path is not None and (os.path.exists(config.train.resume_checkpoint_path) or config.train.resume_checkpoint_path.startswith("http")):
         if config.train.resume_checkpoint_path.startswith("http"):
             # Download the checkpoint file
             if is_master:
@@ -307,7 +307,7 @@ def train(config):
         
         if 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if config.train.get('resume_steps_num') is not None:
+        if config.train.resume_steps_num is not None:
             n_steps_done = config.train.resume_steps_num
         elif 'n_steps_done' in checkpoint:
             n_steps_done = checkpoint['n_steps_done']
@@ -351,10 +351,10 @@ def train(config):
     if is_distributed:
         torch.distributed.barrier()
 
-    summary_frequency = config.train.get('summary_frequency', 1000)
-    eval_frequency = config.train.get('num_eval_every_steps', 1000)
-    log_frequency = config.train.get('log_frequency', 30)
-    rolling_window = config.train.get('metrics_rolling_window', log_frequency)
+    summary_frequency = config.train.summary_frequency
+    eval_frequency = config.train.num_eval_every_steps
+    log_frequency = config.train.log_frequency
+    rolling_window = config.train.metrics_rolling_window
 
     if use_tqdm:
         progress_bar = tqdm(range(n_steps_done, n_total_steps), desc=f"Step {n_steps_done}/{n_total_steps} - Avg Loss: 0.000000")
@@ -389,7 +389,7 @@ def train(config):
 
         for mini_i in range(gradient_accum_steps):
             
-            if config.train.get("debug_load_batch_only_once" , False):
+            if config.train.debug_load_batch_only_once:
                 if n_steps_done == 0 and mini_i == 0:
                     batch_inputs_dict = next(data_generator)
             else:
@@ -511,13 +511,13 @@ def train(config):
                         val_loss_fn = loss_function
                         if is_distributed  and hasattr(loss_function, 'module'):
                             val_loss_fn = loss_function.module
-                        val_loss, val_loss_components = evaluate_loss(model_module, val_dataloader, val_loss_fn, device, num_val_steps=config.train.get('num_validation_steps', -1), use_tqdm=config.train.get('validation_use_tqdm', False))
+                        val_loss, val_loss_components = evaluate_loss(model_module, val_dataloader, val_loss_fn, device, num_val_steps=config.train.num_validation_steps, use_tqdm=config.train.validation_use_tqdm)
                         # get metrics also 
                         if metrics_module is not None:
                             metrics_fn = metrics_module
                             if is_distributed and hasattr(metrics_module, 'module'):
                                 metrics_fn = metrics_module.module
-                            _ , val_metrics = evaluate_loss(model_module, val_dataloader, metrics_fn, device, num_val_steps=config.train.get('num_validation_steps', -1), use_tqdm=config.train.get('validation_use_tqdm', False))
+                            _ , val_metrics = evaluate_loss(model_module, val_dataloader, metrics_fn, device, num_val_steps=config.train.num_validation_steps, use_tqdm=config.train.validation_use_tqdm)
                             val_loss_components.update(val_metrics)
                         val_loss_components['total_loss'] = val_loss
                         
@@ -547,19 +547,19 @@ def train(config):
         
 
         # Save checkpoint
-        if n_steps_done % config.train.get('checkpoint_save_frequency', 1000) == 0 or n_steps_done >= n_total_steps:
+        if n_steps_done % config.train.checkpoint_save_frequency == 0 or n_steps_done >= n_total_steps:
             if is_master:
-                if not config.train.get('no_save_weights', False):
+                if not config.train.no_save_weights:
                     checkpoint_path = os.path.join(config.train.save_dir, f'model_step_{n_steps_done}.pt')
                     state_dict = model_module.state_dict()
                     cur_loss = sum(loss_history['total_loss']) /  len(loss_history['total_loss'])
-                    if config.train.get('save_separate_stepwise_checkpoints', False):
+                    if config.train.save_separate_stepwise_checkpoints:
                         to_save = {
                             'n_steps_done': n_steps_done,
                             'model_state_dict': state_dict,
                             'loss': cur_loss,
                         }
-                        if config.train.get('save_optimizer_in_all_checkpoints', False):
+                        if config.train.save_optimizer_in_all_checkpoints:
                             to_save['optimizer_state_dict'] = optimizer.state_dict()
                         torch.save(to_save, checkpoint_path)
 

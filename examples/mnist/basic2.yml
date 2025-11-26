@@ -1,0 +1,36 @@
+model:
+  name: examples.mnist.mnist.MNISTClassifier
+  args:
+    n_hidden: 128
+  ckpt_path: null
+
+dataset:
+  name: examples.mnist.mnist.MNISTDataset
+  args:
+    train : true
+   
+
+val_dataset:
+  name: examples.mnist.mnist.MNISTDataset
+  args:
+    train: false
+
+losses:
+
+  cce:
+    function_name: cross_entropy_classification_loss
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: gt_class_id
+
+
+
+train:
+  
+
+  save_dir: /tmp/aa
+  device: cuda
+  
+  optimizer:
+    name: adam
+    

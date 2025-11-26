@@ -5,7 +5,7 @@ from omegaconf import OmegaConf
 
 
 from .train_module import train
-
+from .default_config import DEFAULT_CONFIG
 
 def train_cli():
     parser = argparse.ArgumentParser(description="Train model")
@@ -15,6 +15,7 @@ def train_cli():
     args = parser.parse_args()
     OmegaConf.register_new_resolver("eval", eval)
     config = OmegaConf.load(args.config)
+    config = OmegaConf.merge(DEFAULT_CONFIG, config)
     
     # Apply config overrides using OmegaConf CLI
     if args.overrides:
