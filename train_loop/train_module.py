@@ -119,9 +119,10 @@ def train(config):
         assert is_compile_model, "If compiling model with loss, 'compile_model' must be True."
 
 
-    out_config_path = os.path.join(config.train.save_dir, 'config.yaml')
-    if os.path.exists(out_config_path) and (not config.train.resume):
-        raise FileExistsError(f"Config file {out_config_path} already exists. Please remove it or choose a different save directory.")
+    if config.train.save_dir is not None:
+        out_config_path = os.path.join(config.train.save_dir, 'config.yaml')
+        if os.path.exists(out_config_path) and (not config.train.resume):
+            raise FileExistsError(f"Config file {out_config_path} already exists. Please remove it or choose a different save directory.")
     
     use_tqdm = config.train.use_tqdm
     if use_ddp:
@@ -346,7 +347,7 @@ def train(config):
 
 
     # Make sure save directory exists
-    if is_master: # not use_ddp or local_rank == 0:
+    if is_master and config.train.save_dir is not None: # not use_ddp or local_rank == 0:
         os.makedirs(config.train.save_dir, exist_ok=True)
         # Save git state for reproducibility
         save_git_state(config.train.save_dir)
@@ -395,6 +396,7 @@ def train(config):
                     for func in config.summary_functions:
                         summary_func = build_class(func)
                         with autocast_ctx:
+                            # Pass save_dir (could be None) but let summary_func decide what to do
                             summary_func.run(model_module, dataset, config.train.save_dir, n_steps_done)
         
 
@@ -505,10 +507,9 @@ def train(config):
                 loss_history[k].pop(0)
         
         # Log training loss to jsonl file every rolling_window steps
-        if n_steps_done % log_frequency == 0:
+        if config.train.save_dir is not None and n_steps_done % log_frequency == 0:
             train_loss_components = {k: sum(v)/len(v) for k, v in loss_history.items()}
             train_loss_components['step'] = n_steps_done
-            
             train_loss_file = os.path.join(config.train.save_dir, 'train_loss.jsonl')
             with open(train_loss_file, 'a') as f:
                 f.write(json.dumps(train_loss_components) + '\n')
@@ -522,7 +523,6 @@ def train(config):
                 with autocast_ctx:
                     if is_master:
                         # time.sleep(10)
-                        
                         val_loss_fn = loss_function
                         if is_distributed  and hasattr(loss_function, 'module'):
                             val_loss_fn = loss_function.module
@@ -535,13 +535,11 @@ def train(config):
                             _ , val_metrics = evaluate_loss(model_module, val_dataloader, metrics_fn, device, num_val_steps=config.train.num_validation_steps, use_tqdm=config.train.validation_use_tqdm)
                             val_loss_components.update(val_metrics)
                         val_loss_components['total_loss'] = val_loss
-                        
-                        # Append validation loss to jsonl file
                         val_loss_components['step'] = n_steps_done
-                        val_loss_file = os.path.join(config.train.save_dir, 'val_loss.jsonl')
-                        with open(val_loss_file, 'a') as f:
-                            f.write(json.dumps(val_loss_components) + '\n')
-                        
+                        if config.train.save_dir is not None:
+                            val_loss_file = os.path.join(config.train.save_dir, 'val_loss.jsonl')
+                            with open(val_loss_file, 'a') as f:
+                                f.write(json.dumps(val_loss_components) + '\n')
                         print(f"Validation Loss at step {n_steps_done}: {val_loss:.6f}")
                         print(f"Validation Loss Components: {val_loss_components}")
 
@@ -562,9 +560,9 @@ def train(config):
         
 
         # Save checkpoint
-        if n_steps_done % config.train.checkpoint_save_frequency == 0 or n_steps_done >= n_total_steps:
+        if (n_steps_done % config.train.checkpoint_save_frequency == 0 or n_steps_done >= n_total_steps):
             if is_master:
-                if not config.train.no_save_weights:
+                if config.train.save_dir is not None and not config.train.no_save_weights:
                     checkpoint_path = os.path.join(config.train.save_dir, f'model_step_{n_steps_done}.pt')
                     state_dict = model_module.state_dict()
                     cur_loss = sum(loss_history['total_loss']) /  len(loss_history['total_loss'])
@@ -585,6 +583,8 @@ def train(config):
                         'loss': cur_loss,
                     }, os.path.join(config.train.save_dir, 'model_latest.pt'))
                     print(f"Saved checkpoint at step {n_steps_done} to {checkpoint_path}")
+                elif config.train.save_dir is None:
+                    pass  # do not save, but do not skip other logic
                 else:
                     print("Skipping checkpoint save (no_save_weights=True)")
     
@@ -593,7 +593,8 @@ def train(config):
         if 'cuda' in str(device):
             print("Max memory allocated:", torch.cuda.max_memory_allocated(device) / (1024 ** 2), "MB")
             print("Max memory reserved:", torch.cuda.max_memory_reserved(device) / (1024 ** 2), "MB")
-        print("Saved in " , config.train.save_dir)
+        if config.train.save_dir is not None:
+            print("Saved in " , config.train.save_dir)
     if use_ddp:
         torch.distributed.destroy_process_group()
     return model
