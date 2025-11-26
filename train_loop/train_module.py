@@ -223,7 +223,22 @@ def train(config):
         elif n_gpus > 1:
             gan_loss = torch.nn.DataParallel(gan_loss, device_ids=list(range(n_gpus)))
 
-    dataset = build_class(config.dataset)
+    if is_distributed:
+        if is_master:
+            print("Loading dataset on master...")
+            dataset = build_class(config.dataset) # first just get dataset on master ( so that it can download if needed)
+            print("Dataset loaded on master.")
+        torch.distributed.barrier()
+        if not is_master:
+            print(f"Loading dataset on rank {local_rank}...")
+            dataset = build_class(config.dataset) # then get dataset on other ranks
+            print(f"Dataset loaded on rank {local_rank}.")
+        torch.distributed.barrier()
+    else:
+        dataset = build_class(config.dataset)
+            
+
+    
     # Setup dataloader
     if use_ddp:
         train_sampler = DistributedSampler(dataset)
