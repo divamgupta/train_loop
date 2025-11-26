@@ -2,7 +2,29 @@ from omegaconf import OmegaConf
 
 DEFAULT_CONFIG = OmegaConf.create({
     "sanity": False,
+
+    "model": {
+        "name": None
+    },
+
+    "dataset": {
+        "name": None
+    },
+
+    "losses": {
+        "default_loss": {
+            "function_name": None,
+            "src_key": None ,
+            "tgt_key": None 
+        } ,
+    },
+
+    
+
+
     "train": {
+        "device": "cuda",
+
         "pt_single_threaded": True,
         "use_ddp": False,
         "n_gpus": 1,
@@ -20,6 +42,12 @@ DEFAULT_CONFIG = OmegaConf.create({
         "batch_size": 2, 
         "num_workers": 0,
         "checkpoint_save_frequency": 1000,
+
+        "save_dir" : None, 
+
+        "optimizer": {
+            "name" : "adam"
+        },
 
         "validation_use_tqdm": False,
         "num_validation_steps": -1,

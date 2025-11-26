@@ -14,8 +14,11 @@ def train_cli():
                         help='Override config values using dotpath notation (e.g., train.lr=0.001, model.hidden_size=256)')
     args = parser.parse_args()
     OmegaConf.register_new_resolver("eval", eval)
-    config = OmegaConf.load(args.config)
-    config = OmegaConf.merge(DEFAULT_CONFIG, config)
+    if args.config.lower() == 'none' or args.config is None or args.config.lower() == 'null':
+        config = DEFAULT_CONFIG
+    else:
+        config = OmegaConf.load(args.config)
+        config = OmegaConf.merge(DEFAULT_CONFIG, config)
     
     # Apply config overrides using OmegaConf CLI
     if args.overrides:

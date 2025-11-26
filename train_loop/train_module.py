@@ -590,8 +590,9 @@ def train(config):
     
     if is_master:
         print("Training completed!")
-        print("Max memory allocated:", torch.cuda.max_memory_allocated(device) / (1024 ** 2), "MB")
-        print("Max memory reserved:", torch.cuda.max_memory_reserved(device) / (1024 ** 2), "MB")
+        if 'cuda' in str(device):
+            print("Max memory allocated:", torch.cuda.max_memory_allocated(device) / (1024 ** 2), "MB")
+            print("Max memory reserved:", torch.cuda.max_memory_reserved(device) / (1024 ** 2), "MB")
         print("Saved in " , config.train.save_dir)
     if use_ddp:
         torch.distributed.destroy_process_group()

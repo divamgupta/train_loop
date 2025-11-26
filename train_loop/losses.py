@@ -41,6 +41,11 @@ class LossModule():
         self.loss_functions = {}
         self.loss_weights = {}
         for loss_name , loss_args in losses.items():
+
+            if loss_name == "default_loss" and not loss_args.get("function_name", None):
+                # default loss is in the default config but may not be specified by the user
+                continue # Skip if no function_name specified for default_loss
+
             self.loss_weights[loss_name] = loss_args.get('weight', 1.0)
             function_name = loss_args.get('function_name', loss_name)
             self.loss_functions[loss_name] = make_loss_module(function_name, loss_args)

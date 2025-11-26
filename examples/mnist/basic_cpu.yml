@@ -1,0 +1,77 @@
+model:
+  name: examples.mnist.mnist.MNISTClassifier
+  args:
+    n_hidden: 128
+  ckpt_path: null
+
+
+# summary_functions:
+#   - name: misc.GenerateYoloDetections
+
+dataset:
+  name: examples.mnist.mnist.MNISTDataset
+  args:
+    train : true
+   
+
+val_dataset:
+  name: examples.mnist.mnist.MNISTDataset
+  args:
+    train: false
+
+losses:
+
+  cce:
+    function_name: cross_entropy_classification_loss
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: gt_class_id
+
+metrics:
+  accuracy:
+    function_name: accuracy_classification
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: gt_class_id
+
+sanity: false
+
+train:
+  batch_size: 32
+  
+  n_total_steps: 1000
+  n_total_samples: -1
+
+  checkpoint_save_frequency : 100
+  summary_frequency: 100
+
+  save_dir: /tmp/aa
+  device: cpu
+  resume_checkpoint_path: null
+  resume_steps_num: null
+  num_workers: 0
+
+  optimizer:
+    name: adam
+    
+
+  num_eval_every_steps: 100
+  resume: false
+
+  validation_use_tqdm : false 
+
+  no_save_weights: false
+  n_gpus : 1 
+  use_ddp: false
+  find_unused_parameters: false
+  gradient_accum_steps: 2
+
+  use_tqdm: true
+  grad_clip_value: 0
+  use_bfloat16_autocast: True 
+
+  compile_model: true
+  is_compile_model_with_loss: false
+  pt_single_threaded: true
+
+  save_separate_stepwise_checkpoints: true
