@@ -441,7 +441,7 @@ def train(config):
                     if is_distributed and hasattr(gan_loss, 'module'):
                         disc_loss_fn = gan_loss.module
                     assert model_outputs is not None, "Model outputs should not be None when using GAN loss."
-                    loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
+                    loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict, model_outputs)
                     disc_optimizer.zero_grad()
                     loss_disc.backward(retain_graph=True)
                     disc_optimizer.step()
@@ -467,7 +467,7 @@ def train(config):
                     gen_loss_fn = gan_loss
                     if is_distributed and hasattr(gan_loss, 'module'):
                         gen_loss_fn = gan_loss.module
-                    gen_loss = gen_loss_fn.generator_loss(batch_inputs_dict['teacher_audio'], model_outputs['final_audio'])
+                    gen_loss = gen_loss_fn.generator_loss(batch_inputs_dict, model_outputs)
                     loss += gen_loss * config.gan_loss.gen_loss_weight
                     losses['gen_loss'] = gen_loss
                     losses['disc_loss'] = loss_disc
