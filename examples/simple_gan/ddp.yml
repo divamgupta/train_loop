@@ -1,0 +1,67 @@
+model:
+  name: examples.simple_gan.simple_gan.Generator
+
+
+# summary_functions:
+#   - name: misc.GenerateYoloDetections
+
+dataset:
+  name: examples.simple_gan.simple_gan.MNISTDataset
+  args:
+    train : true
+   
+
+val_dataset:
+  name: examples.simple_gan.simple_gan.MNISTDataset
+  args:
+    train: false
+
+losses:
+  dummy:
+    weight: 1
+
+
+training_outs_log_functions:
+  - name: examples.simple_gan.simple_gan.LogTrainOutputs
+
+
+
+gan_loss: #to disable set it to null
+  name: examples.simple_gan.simple_gan.GANLoss
+  gen_loss_weight: 1
+  args:
+    real_image_key: inp
+    generated_image_key: generated_image
+
+
+
+sanity: false
+
+train:
+
+  n_gpus: 2 
+  use_ddp : true 
+
+  batch_size: 512
+  
+  n_total_steps: 1000
+  n_total_samples: -1
+
+  checkpoint_save_frequency : 100
+  summary_frequency: 100
+  training_outs_log_frequency: 100 
+
+  save_dir: /tmp/aa
+  device: cuda
+
+  optimizer:
+    name: adam
+    args:
+      lr: 2e-4
+      betas: [0.5, 0.999]
+
+  gan_optimizer:
+    name: adam
+    args:
+      lr: 2e-4
+      betas: [0.5, 0.999]
