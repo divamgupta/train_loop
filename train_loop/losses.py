@@ -71,53 +71,59 @@ def get_target(tgt_key, batch, model_outs):
         return batch[tgt_key]
     return model_outs[tgt_key]
 
-def mse(batch, model_outs, src_key , tgt_key):
-    gt = get_target(tgt_key, batch, model_outs)
-    pred = model_outs[src_key]
-    return F.mse_loss(pred, gt)
 
-def flexible_l1(batch, model_outs, src_key, tgt_key):
-    """Flexible L1 loss that handles both single tensors and lists of tensors."""
-    pred = model_outs[src_key]
-    pred = model_outs[src_key]
+def bce(batch, model_outs, src_key, tgt_key , mask_key=None):
+    # make sure you pass model output with sigmoid already applied
     gt = get_target(tgt_key, batch, model_outs)
-    if type(pred) is list:
-        list_loss = 0
-        for i in range(len(pred)):
-            list_loss += F.l1_loss(pred[i], gt[i])
-        return list_loss / len(pred)
-    else:
-        return F.l1_loss(pred, gt)
-
-def flexible_l1_smooth(batch, model_outs, src_key, tgt_key):
-    """Flexible L1 loss that handles both single tensors and lists of tensors."""
     pred = model_outs[src_key]
-    gt = get_target(tgt_key, batch, model_outs)
-    if type(pred) is list:
-        list_loss = 0
-        for i in range(len(pred)):
-            list_loss += F.smooth_l1_loss(pred[i], gt[i])
-        return list_loss / len(pred)
-    else:
-        return F.smooth_l1_loss(pred, gt)
-
-def flexible_bce(batch, model_outs, src_key, tgt_key):
-    """Flexible BCE loss that handles both single tensors and lists of tensors."""
-    pred = model_outs[src_key]
-    gt = get_target(tgt_key, batch, model_outs)
-    if type(pred) is list:
-        list_loss = 0
-        for i in range(len(pred)):
-            list_loss += F.binary_cross_entropy(pred[i], gt[i])
-        return list_loss / len(pred)
+    
+    if mask_key is not None:
+        mask = batch[mask_key]
+        assert len(mask.shape) == len(pred.shape), "Mask shape must match prediction shape"
+        pred = pred * mask
+        gt = gt * mask
+        loss = F.binary_cross_entropy(pred, gt, reduction='none')
+        return (loss * mask).sum() / mask.sum().clamp(min=1)
     else:
         return F.binary_cross_entropy(pred, gt)
 
-def cosine_loss(batch, model_outs, src_key, tgt_key, dim=-1):
-    """Cosine similarity loss between predictions and ground truth. Dim is the dimension where you have the vectors"""
-    pred = model_outs[src_key]
+
+def mse(batch, model_outs, src_key , tgt_key, mask_key=None):
     gt = get_target(tgt_key, batch, model_outs)
-    return (1 - F.cosine_similarity(pred, gt, dim=dim)).mean()
+    pred = model_outs[src_key]
+    if mask_key is not None:
+        mask = batch[mask_key]
+        assert len(mask.shape) == len(pred.shape), "Mask shape must match prediction shape"
+        pred = pred * mask
+        gt =  gt * mask
+        loss = F.mse_loss(pred, gt, reduction='none')
+        return (loss * mask).sum() / mask.sum().clamp(min=1)
+    return F.mse_loss(pred, gt)
+
+def l1(batch, model_outs, src_key , tgt_key, mask_key=None):
+    gt = get_target(tgt_key, batch, model_outs)
+    pred = model_outs[src_key]
+    if mask_key is not None:
+        mask = batch[mask_key]
+        assert len(mask.shape) == len(pred.shape), "Mask shape must match prediction shape"
+        pred = pred * mask
+        gt =  gt * mask
+        loss = F.l1_loss(pred, gt, reduction='none')
+        return (loss * mask).sum() / mask.sum().clamp(min=1)
+    return F.l1_loss(pred, gt)
+
+def smooth_l1(batch, model_outs, src_key , tgt_key, mask_key=None):
+    gt = get_target(tgt_key, batch, model_outs)
+    pred = model_outs[src_key]
+    if mask_key is not None:
+        mask = batch[mask_key]
+        assert len(mask.shape) == len(pred.shape), "Mask shape must match prediction shape"
+        pred = pred * mask
+        gt =  gt * mask
+        loss = F.smooth_l1_loss(pred, gt, reduction='none')
+        return (loss * mask).sum() / mask.sum().clamp(min=1)
+    return F.smooth_l1_loss(pred, gt)
+
 
 def cross_entropy_classification_loss(batch, model_outs, src_key, tgt_key):
     """
@@ -133,6 +139,7 @@ def cross_entropy_classification_loss(batch, model_outs, src_key, tgt_key):
     logits = model_outs[src_key]
     class_ids = get_target(tgt_key, batch, model_outs)
     return F.cross_entropy(logits, class_ids)
+
 
 def accuracy_classification(batch, model_outs, src_key, tgt_key, top_k=1):
     """
