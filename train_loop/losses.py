@@ -78,7 +78,7 @@ def bce(batch, model_outs, src_key, tgt_key , mask_key=None):
     pred = model_outs[src_key]
     
     if mask_key is not None:
-        mask = batch[mask_key]
+        mask = get_target(mask_key, batch, model_outs)
         assert len(mask.shape) == len(pred.shape), "Mask shape must match prediction shape"
         pred = pred * mask
         gt = gt * mask
@@ -92,7 +92,7 @@ def mse(batch, model_outs, src_key , tgt_key, mask_key=None):
     gt = get_target(tgt_key, batch, model_outs)
     pred = model_outs[src_key]
     if mask_key is not None:
-        mask = batch[mask_key]
+        mask = get_target(mask_key, batch, model_outs)
         assert len(mask.shape) == len(pred.shape), "Mask shape must match prediction shape"
         pred = pred * mask
         gt =  gt * mask
@@ -104,7 +104,7 @@ def l1(batch, model_outs, src_key , tgt_key, mask_key=None):
     gt = get_target(tgt_key, batch, model_outs)
     pred = model_outs[src_key]
     if mask_key is not None:
-        mask = batch[mask_key]
+        mask = get_target(mask_key, batch, model_outs)
         assert len(mask.shape) == len(pred.shape), "Mask shape must match prediction shape"
         pred = pred * mask
         gt =  gt * mask
@@ -116,7 +116,7 @@ def smooth_l1(batch, model_outs, src_key , tgt_key, mask_key=None):
     gt = get_target(tgt_key, batch, model_outs)
     pred = model_outs[src_key]
     if mask_key is not None:
-        mask = batch[mask_key]
+        mask = get_target(mask_key, batch, model_outs)
         assert len(mask.shape) == len(pred.shape), "Mask shape must match prediction shape"
         pred = pred * mask
         gt =  gt * mask
