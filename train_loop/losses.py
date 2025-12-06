@@ -170,3 +170,6 @@ def accuracy_classification(batch, model_outs, src_key, tgt_key, top_k=1):
         # Check if true class is in any of the top-k predictions
         correct = (top_k_preds == class_ids_expanded).any(dim=-1)
         return correct.float().mean()
+
+def dummy(batch, model_outs):
+    return torch.tensor(0.0, device=next(iter(model_outs.values())).device)
