@@ -37,6 +37,7 @@ DEFAULT_CONFIG = OmegaConf.create({
         "use_tqdm": False,
         "summary_frequency": 1000,
         "num_eval_every_steps": 1000,
+        "training_outs_log_frequency" : 1000,
         "log_frequency": 30,
         "metrics_rolling_window": 30,
         "batch_size": 2, 

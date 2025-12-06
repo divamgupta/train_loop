@@ -88,6 +88,7 @@ def train(config):
         config.train.num_validation_steps = 10
         config.train.checkpoint_save_frequency = 6 
         config.train.summary_frequency = 6
+        config.train.training_outs_log_frequency = 5
         config.train.log_frequency = 3
 
         # if exists delete the dir 
@@ -380,6 +381,15 @@ def train(config):
     iter_times = []
     loss_history = {}
 
+
+    training_outs_log_functions = []
+
+    if is_master:
+        if "training_outs_log_functions" in config and config.training_outs_log_functions is not None:
+            for func in config.training_outs_log_functions:
+                log_func = build_class(func)
+                training_outs_log_functions.append(log_func)
+
     # Training loop
     for _ in progress_bar:
         # if use_ddp:
@@ -397,7 +407,7 @@ def train(config):
                         summary_func = build_class(func)
                         with autocast_ctx:
                             # Pass save_dir (could be None) but let summary_func decide what to do
-                            summary_func.run(model_module, dataset, config.train.save_dir, n_steps_done)
+                            summary_func.run(model_module, (val_dataset if val_dataset is not None else dataset), config.train.save_dir, n_steps_done)
         
 
         iter_start_time = time.time()
@@ -433,6 +443,10 @@ def train(config):
                     loss, losses = model_with_loss(batch_inputs_dict)
                 else:
                     model_outputs = model(batch_inputs_dict)
+
+                if is_master and mini_i == 0 and len(training_outs_log_functions) > 0 and (n_steps_done % config.train.training_outs_log_frequency == 0):
+                    for log_func in training_outs_log_functions:
+                        log_func.run(model_module, dataset, config.train.save_dir, n_steps_done, model_outputs , batch_inputs_dict)
 
                 if gan_loss is not None:
                     assert gradient_accum_steps == 1, "GAN loss with gradient accumulation is not supported yet."
@@ -505,6 +519,8 @@ def train(config):
             loss_history[k].append(v.item())
             if len(loss_history[k]) > rolling_window:
                 loss_history[k].pop(0)
+
+        
         
         # Log training loss to jsonl file every rolling_window steps
         if config.train.save_dir is not None and n_steps_done % log_frequency == 0:
