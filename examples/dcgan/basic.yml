@@ -1,0 +1,59 @@
+model:
+  name: examples.dcgan.dcgan.Generator
+
+
+dataset:
+  name: examples.dcgan.dcgan.CelebADataset
+  args:
+    dataroot: data/celeba
+    image_size: 64
+    train: true
+   
+
+losses:
+  dummy:
+    weight: 1
+
+
+gan_loss: #to disable set it to null
+  name: examples.dcgan.dcgan.GANLoss
+  gen_loss_weight: 1
+  args:
+    real_image_key: inp
+    generated_image_key: generated_image
+
+
+training_outs_log_functions:
+  - name: examples.dcgan.dcgan.LogTrainOutputs
+
+
+
+sanity: false
+
+train:
+  batch_size: 128
+  
+  n_total_steps: 10000
+  n_total_samples: -1
+  n_epochs: 5
+
+  checkpoint_save_frequency: 500
+  summary_frequency: 50
+  training_outs_log_frequency: 200
+
+  save_dir: /tmp/dcgan_celeba
+  device: cuda
+
+  num_workers: 2
+
+  optimizer:
+    name: adam
+    args:
+      lr: 0.0002
+      betas: [0.5, 0.999]
+
+  gan_optimizer:
+    name: adam
+    args:
+      lr: 0.0002
+      betas: [0.5, 0.999]
