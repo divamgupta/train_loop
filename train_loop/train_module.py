@@ -520,8 +520,13 @@ def train(config):
         losses_plus_metrics.update(grad_metrics)
         losses_plus_metrics['total_loss'] = loss 
 
+        if config.train.log_iter_time:
+            losses_plus_metrics['iter_time'] = iter_end_time - iter_start_time
+
         if grad_clip_enabled:
             losses_plus_metrics['grad_norm'] = grad_norm
+
+        
 
         for k, v in losses_plus_metrics.items():
             if k not in loss_history:
@@ -529,8 +534,6 @@ def train(config):
             loss_history[k].append( v.item() if isinstance(v, torch.Tensor) else v )
             if len(loss_history[k]) > rolling_window:
                 loss_history[k].pop(0)
-
-        
         
         # Log training loss to jsonl file every rolling_window steps
         if config.train.save_dir is not None and n_steps_done % log_frequency == 0:

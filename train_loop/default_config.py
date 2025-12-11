@@ -62,6 +62,7 @@ DEFAULT_CONFIG = OmegaConf.create({
         "resume_checkpoint_path": None,
         "resume_steps_num": None,
         "n_total_steps": -1 , 
-        "n_total_samples" : -1
+        "n_total_samples" : -1 , 
+        "log_iter_time" : False
     }
 })
