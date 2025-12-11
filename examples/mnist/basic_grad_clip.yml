@@ -41,9 +41,14 @@ grad_metrics:
     norm_type: 2.0
 
   grad_norm_l1:
-    function_name: examples.mnist.mnist.compute_grad_norm
+    function_name: grad_norm
     norm_type: 1.0
 
+  grad_norm: {}
+
+optimizer_metrics:
+  lr:
+    function_name: opt_learning_rate
 
 sanity: false
 

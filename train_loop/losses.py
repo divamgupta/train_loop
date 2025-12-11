@@ -173,3 +173,22 @@ def accuracy_classification(batch, model_outs, src_key, tgt_key, top_k=1):
 
 def dummy(batch, model_outs):
     return torch.tensor(0.0, device=next(iter(model_outs.values())).device)
+
+
+def grad_norm(model, norm_type=2.0):
+    total_norm = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.detach().data.norm(norm_type)
+            total_norm += param_norm.item() ** norm_type
+    total_norm = total_norm ** (1. / norm_type)
+    return total_norm
+
+def opt_learning_rate(optimizer):
+    lrs = set()
+    for param_group in optimizer.param_groups:
+        lrs.add(param_group['lr'])
+    if len(lrs) == 1:
+        return lrs.pop()
+    else:
+        raise ValueError("Multiple learning rates found in optimizer param groups.")

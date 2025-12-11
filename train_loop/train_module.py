@@ -493,10 +493,11 @@ def train(config):
         if "grad_metrics" in config and config.grad_metrics is not None:
             for grad_metric_name , grad_metric_conf in config.grad_metrics.items():
                 grad_metric_conf_copy = grad_metric_conf.copy()
-                grad_metric_fn_name = grad_metric_conf_copy.pop("function_name")
-
+                grad_metric_fn_name = grad_metric_conf_copy.pop("function_name", grad_metric_name)
+                if "." not in grad_metric_fn_name:
+                    grad_metric_fn_name = "train_loop.losses." + grad_metric_fn_name
                 grad_metric_fn = get_obj(grad_metric_fn_name )
-                grad_metrics[grad_metric_name] = grad_metric_fn(model_module,**grad_metric_conf_copy)
+                grad_metrics[grad_metric_name] = grad_metric_fn(model=model_module,**grad_metric_conf_copy)
 
         grad_clip_enabled = grad_clip_value > 0.0
         if grad_clip_enabled:
@@ -509,6 +510,16 @@ def train(config):
         optimizer.step()
         optimizer.zero_grad()
 
+        optimizer_metrics = {}
+        if "optimizer_metrics" in config and config.optimizer_metrics is not None:
+            for opt_metric_name , opt_metric_conf in config.optimizer_metrics.items():
+                opt_metric_conf_copy = opt_metric_conf.copy()
+                opt_metric_fn_name = opt_metric_conf_copy.pop("function_name" , opt_metric_name)
+                if "." not in opt_metric_fn_name:
+                    opt_metric_fn_name = "train_loop.losses." + opt_metric_fn_name
+                opt_metric_fn = get_obj(opt_metric_fn_name )
+                optimizer_metrics[opt_metric_name] = opt_metric_fn(optimizer=optimizer,**opt_metric_conf_copy)
+
         torch.cuda.synchronize()
         
         n_steps_done += 1
@@ -518,6 +529,7 @@ def train(config):
         losses_plus_metrics = losses.copy()
         losses_plus_metrics.update(metrics_result or {})
         losses_plus_metrics.update(grad_metrics)
+        losses_plus_metrics.update(optimizer_metrics)
         losses_plus_metrics['total_loss'] = loss 
 
         if config.train.log_iter_time:
