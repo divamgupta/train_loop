@@ -15,7 +15,7 @@ from omegaconf import OmegaConf
 import json
 import shutil
 from .losses import LossModule 
-from .utils.dynamic_import import build_class
+from .utils.dynamic_import import build_class, get_obj
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from .utils.git import save_git_state
@@ -489,6 +489,15 @@ def train(config):
             
             (loss / gradient_accum_steps).backward()
 
+        grad_metrics = {}
+        if "grad_metrics" in config and config.grad_metrics is not None:
+            for grad_metric_name , grad_metric_conf in config.grad_metrics.items():
+                grad_metric_conf_copy = grad_metric_conf.copy()
+                grad_metric_fn_name = grad_metric_conf_copy.pop("function_name")
+
+                grad_metric_fn = get_obj(grad_metric_fn_name )
+                grad_metrics[grad_metric_name] = grad_metric_fn(model_module,**grad_metric_conf_copy)
+
         grad_clip_enabled = grad_clip_value > 0.0
         if grad_clip_enabled:
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
@@ -508,6 +517,7 @@ def train(config):
         # Update rolling average for each loss component
         losses_plus_metrics = losses.copy()
         losses_plus_metrics.update(metrics_result or {})
+        losses_plus_metrics.update(grad_metrics)
         losses_plus_metrics['total_loss'] = loss 
 
         if grad_clip_enabled:
@@ -516,7 +526,7 @@ def train(config):
         for k, v in losses_plus_metrics.items():
             if k not in loss_history:
                 loss_history[k] = []
-            loss_history[k].append(v.item())
+            loss_history[k].append( v.item() if isinstance(v, torch.Tensor) else v )
             if len(loss_history[k]) > rolling_window:
                 loss_history[k].pop(0)
 

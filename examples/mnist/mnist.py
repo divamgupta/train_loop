@@ -44,6 +44,16 @@ class MNISTClassifier(nn.Module):
         x = self.fc3(x)
         return {"pred_logits" : x}
 
+def compute_grad_norm(model, norm_type=2.0):
+    total_norm = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.detach().data.norm(norm_type)
+            total_norm += param_norm.item() ** norm_type
+    total_norm = total_norm ** (1. / norm_type)
+    return total_norm
+
+
 # Example usage:
 # dataset = MNISTDictDataset(train=True)  # or train=False for test set
 # model = MNISTClassifier()
