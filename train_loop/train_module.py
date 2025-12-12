@@ -242,13 +242,14 @@ def train(config):
 
     
     # Setup dataloader
+    collate_fn = dataset.collate_fn if hasattr(dataset, 'collate_fn') else None
     if use_ddp:
         train_sampler = DistributedSampler(dataset)
         dataloader = DataLoader(dataset, batch_size=config.train.batch_size,
-                               collate_fn=dataset.collate_fn, num_workers=config.train.num_workers, shuffle=False, sampler=train_sampler)
+                               collate_fn=collate_fn, num_workers=config.train.num_workers, shuffle=False, sampler=train_sampler)
     else:
         dataloader = DataLoader(dataset, batch_size=config.train.batch_size,
-                               collate_fn=dataset.collate_fn, num_workers=config.train.num_workers, shuffle=True)
+                               collate_fn=collate_fn, num_workers=config.train.num_workers, shuffle=True)
 
     # Initialize validation dataset if specified in config
     val_dataset = None
@@ -256,11 +257,12 @@ def train(config):
     if is_master:
         if 'val_dataset' in config:
             val_dataset = build_class(config.val_dataset)
+            val_collate_fn = val_dataset.collate_fn if hasattr(val_dataset, 'collate_fn') else None
             # since validation happens on master, we do not use DistributedSampler
             val_dataloader = DataLoader(
                 val_dataset, 
                 batch_size=config.train.get('val_batch_size', config.train.batch_size),
-                collate_fn=val_dataset.collate_fn, 
+                collate_fn=val_collate_fn, 
                 num_workers=config.train.get('val_num_workers', config.train.num_workers),
                 shuffle=False
             )
@@ -439,10 +441,12 @@ def train(config):
 
                 losses = {}
                 model_outputs = None
+                model_outputs_detached = None
                 if model_with_loss is not None:
                     loss, losses = model_with_loss(batch_inputs_dict)
                 else:
                     model_outputs = model(batch_inputs_dict)
+                    model_outputs_detached = { k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in model_outputs.items() }
 
                 if is_master and mini_i == 0 and len(training_outs_log_functions) > 0 and (n_steps_done % config.train.training_outs_log_frequency == 0):
                     for log_func in training_outs_log_functions:
@@ -454,8 +458,8 @@ def train(config):
                     disc_loss_fn = gan_loss
                     if is_distributed and hasattr(gan_loss, 'module'):
                         disc_loss_fn = gan_loss.module
-                    assert model_outputs is not None, "Model outputs should not be None when using GAN loss."
-                    loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict, model_outputs)
+                    assert model_outputs_detached is not None, "Model outputs should not be None when using GAN loss."
+                    loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict, model_outputs_detached)
                     disc_optimizer.zero_grad()
                     loss_disc.backward(retain_graph=True)
                     disc_optimizer.step()
