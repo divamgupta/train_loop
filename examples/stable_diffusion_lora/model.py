@@ -165,7 +165,7 @@ class StableDiffusionModel(nn.Module):
     def load_state_dict(self, state_dict, strict=True):
         return self.lora_params.load_state_dict(state_dict, strict=strict)
     
-    def generate_image(self, prompt, num_inference_steps=25):
+    def generate_image_with_pipe(self, prompt, num_inference_steps=25):
         
         if self.pipeline is None:
             self.pipeline = StableDiffusionPipeline.from_pretrained(
@@ -181,6 +181,90 @@ class StableDiffusionModel(nn.Module):
         generator.manual_seed(1)
         im = self.pipeline(prompt, num_inference_steps=num_inference_steps, generator=generator).images[0]
         return im
+
+    def generate_image(self, prompt, num_inference_steps=25, guidance_scale=7.5, negative_prompt="", seed=1):
+
+        device = self.unet.device
+        use_cfg = guidance_scale > 1.0
+        
+        if seed is not None:
+            generator = torch.Generator(device=device).manual_seed(seed)
+        else:
+            generator = None
+        
+        from diffusers import DDPMScheduler
+        scheduler = DDPMScheduler.from_pretrained(
+            self.pretrained_model_name_or_path, 
+            subfolder="scheduler"
+        )
+        scheduler.set_timesteps(num_inference_steps)
+        
+        latents_shape = (1, self.unet.config.in_channels, 512 // 8, 512 // 8)  # 64x64 latents for 512x512 image
+        
+        if generator is not None:
+            latents = torch.randn(latents_shape, generator=generator, device=device, dtype=self.unet_dtype)
+        else:
+            latents = torch.randn(latents_shape, device=device, dtype=self.unet_dtype)
+        
+        latents = latents * scheduler.init_noise_sigma
+        
+        prompt_input_ids = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        
+        prompt_embeds = self.text_encoder(prompt_input_ids)[0].to(dtype=self.text_encoder_dtype)
+        
+        if use_cfg:
+            negative_input_ids = self.tokenizer(
+                negative_prompt,
+                padding="max_length",
+                max_length=self.tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            ).input_ids.to(device)
+            
+            negative_embeds = self.text_encoder(negative_input_ids)[0].to(dtype=self.text_encoder_dtype)
+        
+        with torch.no_grad():
+            for t in scheduler.timesteps:
+                latent_model_input = scheduler.scale_model_input(latents, timestep=t)
+                
+                if use_cfg:
+                    noise_pred_uncond = self.unet(
+                        latent_model_input.to(self.unet_dtype), 
+                        t, 
+                        negative_embeds
+                    ).sample
+                    
+                    noise_pred_text = self.unet(
+                        latent_model_input.to(self.unet_dtype), 
+                        t, 
+                        prompt_embeds
+                    ).sample
+                    
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                else:
+                    noise_pred = self.unet(
+                        latent_model_input.to(self.unet_dtype), 
+                        t, 
+                        prompt_embeds
+                    ).sample
+                
+                latents = scheduler.step(noise_pred, t, latents, generator=generator).prev_sample
+            
+            latents = latents / self.vae.config.scaling_factor
+            image = self.vae.decode(latents.to(self.vae_dtype)).sample
+        
+        # Convert to PIL Image
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
+        image = (image * 255).round().astype("uint8")
+        
+        return Image.fromarray(image[0])
 
 
 
