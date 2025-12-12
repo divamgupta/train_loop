@@ -7,11 +7,7 @@ model:
 
 
 dataset:
-  name: examples.stable_diffusion_lora.model.TextImageDataset
-  args:
-    dataset_name: "Norod78/microsoft-fluentui-emoji-512-whitebg"
-    text_prepend : "sks style "
-   
+  name: examples.stable_diffusion_lora.model.SingleImageDataset
 
 losses:
 
@@ -26,10 +22,8 @@ summary_functions:
     args:
       show_imgcat: true
       prompts: 
-        - "sks style taj mahal"
-        - "sks style a futuristic cityscape at sunset"
-        - "sks style a beautiful landscape with mountains and a river"
-      img_size: 512
+        - "sks"
+      img_size: 384
 
 optimizer_metrics:
   lr:
@@ -38,10 +32,10 @@ optimizer_metrics:
 sanity: false
 
 train:
-  batch_size: 4
-  gradient_accum_steps: 4
+  batch_size: 1
+  gradient_accum_steps: 1
   
-  n_total_steps: 10000
+  n_total_steps: 200
   n_total_samples: -1
 
   summary_frequency: 20
@@ -61,9 +55,9 @@ train:
     param_groups:
         - params: ["lora_params" ]
           lr: 1e-04
-
+  
   lr_scheduler:
     name: train_loop.lr_schedulers.CosineLRScheduler
     args:
-      total_steps: ${train.n_total_steps}
+      total_steps: 200
     

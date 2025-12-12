@@ -11,9 +11,10 @@ from PIL import Image
 import io
 from torchvision import transforms
 from train_loop.utils.visualization import show_tensor
+import torch.nn.functional as F
 
 class TextImageDataset(Dataset):
-    def __init__(self, dataset_name, text_prepend="" , split="train", image_col="image", text_col="text"):
+    def __init__(self, dataset_name, img_size=512, text_prepend="" , split="train", image_col="image", text_col="text"):
         """
         Load a dataset from Hugging Face with image and text columns.
         
@@ -30,13 +31,11 @@ class TextImageDataset(Dataset):
 
         self.train_transforms = transforms.Compose(
                 [
-                    transforms.Resize(512, interpolation=transforms.InterpolationMode.BILINEAR),
+                    transforms.Resize(img_size, interpolation=transforms.InterpolationMode.BILINEAR),
                     transforms.ToTensor(),
                     transforms.Normalize([0.5], [0.5]),
                 ]
             )
-
-
     
     def __len__(self):
         return len(self.dataset)
@@ -57,8 +56,33 @@ class TextImageDataset(Dataset):
             "text": self.text_prepend + text
         }
 
+
+class SingleImageDataset(Dataset):
+    def __init__(self, img_size=384):
+        self.train_transforms = transforms.Compose(
+                [
+                    transforms.Resize(img_size, interpolation=transforms.InterpolationMode.BILINEAR),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.5], [0.5]),
+                ]
+            )
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, idx):
+        img_path = "examples/stable_diffusion_lora/duck.jpg"
+        image = Image.open(img_path).convert("RGB")
+        image = self.train_transforms(image)
+                
+        return {
+            "image": image,
+            "text": "sks"
+        }
+
+
 class StableDiffusionModel(nn.Module):
-    def __init__(self, pretrained_model_name_or_path, lora_rank=4 ):
+    def __init__(self, pretrained_model_name_or_path, lora_rank=4 , unet_precision="float32", vae_precision="float32", text_encoder_precision="float32"):
         super().__init__()
 
         self.pretrained_model_name_or_path = pretrained_model_name_or_path
@@ -91,9 +115,9 @@ class StableDiffusionModel(nn.Module):
             target_modules=["to_k", "to_q", "to_v", "to_out.0"],
         )
 
-        self.vae_dtype = torch.float16
-        self.unet_dtype = torch.float16
-        self.text_encoder_dtype = torch.float16
+        self.vae_dtype = getattr(torch, vae_precision)
+        self.unet_dtype = getattr(torch, unet_precision)
+        self.text_encoder_dtype = getattr(torch, text_encoder_precision)
 
         self.unet.to(self.unet_dtype)
         self.vae.to(self.vae_dtype)
@@ -111,7 +135,6 @@ class StableDiffusionModel(nn.Module):
         self.lora_params = nn.ParameterList(self.lora_params_dict.values())
         self.pipeline = None
 
-        
 
     def forward(self, batch):
         image = batch["image"]
@@ -156,7 +179,7 @@ class StableDiffusionModel(nn.Module):
             "predicted_noise": model_pred,
             "actual_noise": noise,
             "target_noise": target,
-            "timesteps": timesteps,
+            "timesteps": timesteps
         }
     
     def state_dict(self, *args, **kwargs):
@@ -165,7 +188,7 @@ class StableDiffusionModel(nn.Module):
     def load_state_dict(self, state_dict, strict=True):
         return self.lora_params.load_state_dict(state_dict, strict=strict)
     
-    def generate_image_with_pipe(self, prompt, num_inference_steps=25):
+    def generate_image_with_pipe(self, prompt, num_inference_steps=25, **kwargs):
         
         if self.pipeline is None:
             self.pipeline = StableDiffusionPipeline.from_pretrained(
@@ -179,10 +202,10 @@ class StableDiffusionModel(nn.Module):
 
         generator = torch.Generator(device=self.unet.device)
         generator.manual_seed(1)
-        im = self.pipeline(prompt, num_inference_steps=num_inference_steps, generator=generator).images[0]
+        im = self.pipeline(prompt, num_inference_steps=num_inference_steps, generator=generator , **kwargs).images[0]
         return im
 
-    def generate_image(self, prompt, num_inference_steps=25, guidance_scale=7.5, negative_prompt="", seed=1):
+    def generate_image(self, prompt, num_inference_steps=25, guidance_scale=7.5, negative_prompt="", seed=1, width=512, height=512):
 
         device = self.unet.device
         use_cfg = guidance_scale > 1.0
@@ -192,14 +215,14 @@ class StableDiffusionModel(nn.Module):
         else:
             generator = None
         
-        from diffusers import DDPMScheduler
-        scheduler = DDPMScheduler.from_pretrained(
+        from diffusers import DDIMScheduler
+        scheduler = DDIMScheduler.from_pretrained(
             self.pretrained_model_name_or_path, 
             subfolder="scheduler"
         )
         scheduler.set_timesteps(num_inference_steps)
         
-        latents_shape = (1, self.unet.config.in_channels, 512 // 8, 512 // 8)  # 64x64 latents for 512x512 image
+        latents_shape = (1, self.unet.config.in_channels, height // 8, width // 8)  # 48x48 latents for 384x384 image
         
         if generator is not None:
             latents = torch.randn(latents_shape, generator=generator, device=device, dtype=self.unet_dtype)
@@ -269,28 +292,26 @@ class StableDiffusionModel(nn.Module):
 
 
 class GenerateBasicPreview:
-    def __init__(self, show_imgcat=False):
+    def __init__(self, prompts, show_imgcat=False, img_size=512):
+        self.prompts = prompts
         self.show_imgcat = show_imgcat
+        self.img_size = img_size
+        
         pass 
 
 
     def run(self, model, dataset, out_dir, iter):
         
-
-        prompts = [
-            "sks style taj mahal",
-            "sks style a beautiful landscape with mountains and a river",
-            "sks style a futuristic city with flying cars",
-            "sks style a serene beach at sunset",
-        ]
+        
         imgs = []
-        for prompt in prompts:
-            im = model.generate_image(prompt )
+        for prompt in self.prompts:
+            im = model.generate_image(prompt, width=self.img_size, height=self.img_size)
             imgs.append(im)
         img_cat = Image.new('RGB', (imgs[0].width * len(imgs), imgs[0].height))
         for i, img in enumerate(imgs):
             img_cat.paste(img, (i * imgs[0].width, 0))
-        out_path = os.path.join(out_dir, f"preview_{iter:08d}.png")
-        img_cat.save(out_path)
+        if out_dir is not None:
+            out_path = os.path.join(out_dir, f"preview_{iter:08d}.png")
+            img_cat.save(out_path)
         if self.show_imgcat:
             show_tensor(img_cat)
