@@ -25,6 +25,7 @@ from .utils.model_utils import move_to_device
 from .evaluate_module import evaluate_loss
 from .utils.download import download_file
 from contextlib import nullcontext
+from torch.cuda.amp import GradScaler
 
 
 
@@ -374,6 +375,10 @@ def train(config):
     eval_frequency = config.train.num_eval_every_steps
     log_frequency = config.train.log_frequency
     rolling_window = config.train.metrics_rolling_window
+    
+    scaler = None
+    if config.train.use_grad_scaler:
+        scaler = GradScaler()
 
     if use_tqdm:
         progress_bar = tqdm(range(n_steps_done, n_total_steps), desc=f"Step {n_steps_done}/{n_total_steps} - Avg Loss: 0.000000")
@@ -461,9 +466,15 @@ def train(config):
                     assert model_outputs_detached is not None, "Model outputs should not be None when using GAN loss."
                     loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict, model_outputs_detached)
                     disc_optimizer.zero_grad()
-                    loss_disc.backward(retain_graph=True)
-                    disc_optimizer.step()
+                    if scaler is None:
+                        loss_disc.backward(retain_graph=True)
+                        disc_optimizer.step()
+                    else:
+                        scaler.scale(loss_disc).backward(retain_graph=True)
+                        scaler.step(disc_optimizer)
+                        scaler.update()
 
+                    
                 if model_with_loss is None:
                     assert model_outputs is not None, "Model outputs should not be None when using loss function."
                     loss_fn = loss_function
@@ -490,8 +501,11 @@ def train(config):
                     losses['gen_loss'] = gen_loss
                     losses['disc_loss'] = loss_disc
 
-            
-            (loss / gradient_accum_steps).backward()
+            if scaler is  None:
+                (loss / gradient_accum_steps).backward()
+            else:
+                # import pdb; pdb.set_trace()
+                scaler.scale(loss / gradient_accum_steps).backward()
 
         grad_metrics = {}
         if "grad_metrics" in config and config.grad_metrics is not None:
@@ -511,7 +525,12 @@ def train(config):
         if lr_scheduler is not None:
             lr_scheduler.step(n_steps_done)
 
-        optimizer.step()
+        if scaler is None:
+            optimizer.step()
+        else:
+            scaler.step(optimizer)
+            scaler.update()
+
         optimizer.zero_grad()
 
         optimizer_metrics = {}
