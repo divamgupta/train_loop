@@ -173,12 +173,12 @@ class StableDiffusionModel(nn.Module):
         else:
             raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
 
-        model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+        model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample.float()
 
         return {
-            "predicted_noise": model_pred,
-            "actual_noise": noise,
-            "target_noise": target,
+            "predicted_noise": model_pred.float(),
+            "actual_noise": noise.float(),
+            "target_noise": target.float(),
             "timesteps": timesteps
         }
     
@@ -284,7 +284,7 @@ class StableDiffusionModel(nn.Module):
         
         # Convert to PIL Image
         image = (image / 2 + 0.5).clamp(0, 1)
-        image = image.detach().cpu().permute(0, 2, 3, 1).numpy()
+        image = image.detach().float().cpu().permute(0, 2, 3, 1).numpy()
         image = (image * 255).round().astype("uint8")
         
         return Image.fromarray(image[0])
