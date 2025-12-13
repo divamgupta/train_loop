@@ -54,6 +54,7 @@ DEFAULT_CONFIG = OmegaConf.create({
         "num_validation_steps": -1,
         "create_model_meta_init": False,
         "use_bfloat16_autocast": False,
+        "use_float16_autocast": False,
         "debug_load_batch_only_once": False,
         "no_save_weights": False,
         "save_separate_stepwise_checkpoints": False,

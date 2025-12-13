@@ -148,6 +148,8 @@ def train(config):
 
     if config.train.use_bfloat16_autocast:
         autocast_ctx = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16)
+    elif config.train.use_float16_autocast:
+        autocast_ctx = torch.amp.autocast(device_type='cuda', dtype=torch.float16)
     else:
         autocast_ctx = nullcontext()
 
