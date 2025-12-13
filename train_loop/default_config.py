@@ -65,6 +65,8 @@ DEFAULT_CONFIG = OmegaConf.create({
         "n_total_steps": -1 , 
         "n_total_samples" : -1 , 
         "log_iter_time" : False,
-        "use_grad_scaler": False
+        "use_grad_scaler": False,
+        "use_accelerate" : False,
+        "accelerate_mixed_precision": None ,  # bf16 or fp16 or None
     }
 })
