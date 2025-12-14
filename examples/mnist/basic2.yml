@@ -23,12 +23,16 @@ losses:
     src_key: pred_logits
     tgt_key: gt_class_id
 
-
+metrics:
+  accuracy:
+    function_name: accuracy_classification
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: gt_class_id
 
 train:
   
-
-  save_dir: /tmp/aa
+  n_total_steps: 1000 
   device: cuda
   
   optimizer:

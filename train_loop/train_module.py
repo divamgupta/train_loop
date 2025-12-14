@@ -27,6 +27,11 @@ from .utils.download import download_file
 from contextlib import nullcontext
 from torch.cuda.amp import GradScaler
 
+try:
+    from accelerate import Accelerator
+except ImportError:
+    print("Accelerate not installed. To use accelerate features, please install it via 'pip install accelerate'")
+    Accelerator = None
 
 
 def get_compiled_model_with_loss(model, loss_function, device):
@@ -100,6 +105,12 @@ def train(config):
         if use_ddp:
             time.sleep(2)  # Ensure all processes wait for dir deletion
 
+    accelerator = None
+    if config.train.use_accelerate:
+        accelerator = Accelerator(mixed_precision=config.train.accelerate_mixed_precision)
+
+    is_master = accelerator.is_main_process if accelerator is not None else is_master
+
 
     n_total_steps = config.train.n_total_steps
     n_total_samples = config.train.n_total_samples
@@ -130,19 +141,23 @@ def train(config):
     if use_ddp:
         use_tqdm = False
 
-    if use_ddp:
-        torch.distributed.init_process_group(backend="nccl")
-        device = torch.device(f"cuda:{local_rank}")
-        torch.cuda.set_device(device)
-        print(f"Using DistributedDataParallel on rank {local_rank} of {world_size}")
-    else:
-        device = config.train.device
-        if n_gpus > 1:
-            assert torch.cuda.is_available(), "Multi-GPU requested but CUDA is not available."
-            device = torch.device("cuda:0")
-            print(f"Using {n_gpus} GPUs for training (DataParallel)")
+    if accelerator is None:
+        if use_ddp:
+            torch.distributed.init_process_group(backend="nccl")
+            device = torch.device(f"cuda:{local_rank}")
+            torch.cuda.set_device(device)
+            print(f"Using DistributedDataParallel on rank {local_rank} of {world_size}")
         else:
-            device = torch.device(device)
+            device = config.train.device
+            if n_gpus > 1:
+                assert torch.cuda.is_available(), "Multi-GPU requested but CUDA is not available."
+                device = torch.device("cuda:0")
+                print(f"Using {n_gpus} GPUs for training (DataParallel)")
+            else:
+                device = torch.device(device)
+    else:
+        device = accelerator.device
+   
 
     is_distributed = use_ddp or n_gpus > 1
 
@@ -151,6 +166,9 @@ def train(config):
     elif config.train.use_float16_autocast:
         autocast_ctx = torch.amp.autocast(device_type='cuda', dtype=torch.float16)
     else:
+        autocast_ctx = nullcontext()
+
+    if accelerator is not None:
         autocast_ctx = nullcontext()
 
 
@@ -184,17 +202,19 @@ def train(config):
             model_with_loss = get_compiled_model_with_loss(model, loss_function, device)
         else:
             model = torch.compile(model, dynamic=False) 
+            assert accelerator is None, "Accelerate and torch.compile cannot be used together yet."
     
-    if use_ddp:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank,  find_unused_parameters=find_unused_parameters)
-        if model_with_loss is not None:
-            model_with_loss = DDP(model_with_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
-    elif n_gpus > 1:
-        model = torch.nn.DataParallel(model, device_ids=list(range(n_gpus)))
-        if model_with_loss is not None:
-            model_with_loss = torch.nn.DataParallel(model_with_loss, device_ids=list(range(n_gpus)))
+    if accelerator is None:
+        if use_ddp:
+            model = DDP(model, device_ids=[local_rank], output_device=local_rank,  find_unused_parameters=find_unused_parameters)
+            if model_with_loss is not None:
+                model_with_loss = DDP(model_with_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
+        elif n_gpus > 1:
+            model = torch.nn.DataParallel(model, device_ids=list(range(n_gpus)))
+            if model_with_loss is not None:
+                model_with_loss = torch.nn.DataParallel(model_with_loss, device_ids=list(range(n_gpus)))
 
-    model_module = model.module if is_distributed else model
+    model_module = model.module if (is_distributed and accelerator is None) else model
 
     if is_master:
         print("Model Summary:")
@@ -208,11 +228,12 @@ def train(config):
         for name, model_cfg in config.extra_models.items():
             extra_model = build_class(model_cfg)
             extra_model.to(device)
-            if use_ddp:
-                pass
-                # extra_model = DDP(extra_model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
-            elif n_gpus > 1:
-                extra_model = torch.nn.DataParallel(extra_model, device_ids=list(range(n_gpus)))
+            if accelerator is None:
+                if use_ddp:
+                    pass
+                    # extra_model = DDP(extra_model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
+                elif n_gpus > 1:
+                    extra_model = torch.nn.DataParallel(extra_model, device_ids=list(range(n_gpus)))
 
             for param in extra_model.parameters():
                 param.requires_grad = False
@@ -223,11 +244,11 @@ def train(config):
     if 'gan_loss' in config and config.gan_loss is not None:
         gan_loss = build_class(config.gan_loss)
         gan_loss.to(device)
-        if use_ddp:
-            gan_loss = DDP(gan_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
-        elif n_gpus > 1:
-            gan_loss = torch.nn.DataParallel(gan_loss, device_ids=list(range(n_gpus)))
-
+        if accelerator is None:
+            if use_ddp:
+                gan_loss = DDP(gan_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
+            elif n_gpus > 1:
+                gan_loss = torch.nn.DataParallel(gan_loss, device_ids=list(range(n_gpus)))
     if is_distributed:
         if is_master:
             print("Loading dataset on master...")
@@ -246,7 +267,7 @@ def train(config):
     
     # Setup dataloader
     collate_fn = dataset.collate_fn if hasattr(dataset, 'collate_fn') else None
-    if use_ddp:
+    if use_ddp and accelerator is None:
         train_sampler = DistributedSampler(dataset)
         dataloader = DataLoader(dataset, batch_size=config.train.batch_size,
                                collate_fn=collate_fn, num_workers=config.train.num_workers, shuffle=False, sampler=train_sampler)
@@ -399,13 +420,17 @@ def train(config):
                 log_func = build_class(func)
                 training_outs_log_functions.append(log_func)
 
+    if accelerator is not None:
+        model, optimizer, dataloader, lr_scheduler, gan_loss, val_dataloader,disc_optimizer = accelerator.prepare(
+            model, optimizer, dataloader, lr_scheduler, gan_loss, val_dataloader, disc_optimizer
+        )
+        for k in extra_models:
+            extra_models[k] = accelerator.prepare(extra_models[k])
+
     # Training loop
     for _ in progress_bar:
         # if use_ddp:
-        #     dataloader.sampler.set_e_poch(e_poch)        
-        # Track rolling average of losses over last 30 iterations
-        
-        
+        #     dataloader.sampler.set_e_poch(e_poch)                
 
         if summary_frequency > 0 and  n_steps_done % summary_frequency == 0:
             if is_distributed:
@@ -424,6 +449,11 @@ def train(config):
         torch.cuda.synchronize()
 
         for mini_i in range(gradient_accum_steps):
+
+            if config.train.debug_ddp_sync:
+                print("mini_i:", mini_i, "rank:", local_rank)
+                if is_master:
+                    time.sleep(5)
             
             if config.train.debug_load_batch_only_once:
                 if n_steps_done == 0 and mini_i == 0:
@@ -439,12 +469,21 @@ def train(config):
 
                 continue
             
-            batch_inputs_dict = move_to_device(batch_inputs_dict, device)
+            if accelerator is None: # accelerator automatically handles moving to device
+                batch_inputs_dict = move_to_device(batch_inputs_dict, device)
 
             if hasattr(dataset , 'post_process_batch'):
                 dataset.post_process_batch(batch_inputs_dict)
+
+            only_sync_end_ctx = nullcontext()
+            if is_distributed:
+                if (mini_i < gradient_accum_steps -1):
+                    if accelerator is not None:
+                        only_sync_end_ctx = accelerator.no_sync(model) 
+                    else:
+                        only_sync_end_ctx = model.no_sync() 
             
-            with autocast_ctx:
+            with autocast_ctx, only_sync_end_ctx:
 
                 losses = {}
                 model_outputs = None
@@ -468,13 +507,17 @@ def train(config):
                     assert model_outputs_detached is not None, "Model outputs should not be None when using GAN loss."
                     loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict, model_outputs_detached)
                     disc_optimizer.zero_grad()
-                    if scaler is None:
-                        loss_disc.backward(retain_graph=True)
+                    if accelerator is not None:
+                        accelerator.backward(loss_disc)
                         disc_optimizer.step()
                     else:
-                        scaler.scale(loss_disc).backward(retain_graph=True)
-                        scaler.step(disc_optimizer)
-                        scaler.update()
+                        if scaler is None:
+                            loss_disc.backward(retain_graph=True)
+                            disc_optimizer.step()
+                        else:
+                            scaler.scale(loss_disc).backward(retain_graph=True)
+                            scaler.step(disc_optimizer)
+                            scaler.update()
 
                     
                 if model_with_loss is None:
@@ -503,11 +546,13 @@ def train(config):
                     losses['gen_loss'] = gen_loss
                     losses['disc_loss'] = loss_disc
 
-            if scaler is  None:
-                (loss / gradient_accum_steps).backward()
+            if accelerator is not None:
+                accelerator.backward(loss / gradient_accum_steps)
             else:
-                # import pdb; pdb.set_trace()
-                scaler.scale(loss / gradient_accum_steps).backward()
+                if scaler is  None:
+                    (loss / gradient_accum_steps).backward()
+                else:
+                    scaler.scale(loss / gradient_accum_steps).backward()
 
         grad_metrics = {}
         if "grad_metrics" in config and config.grad_metrics is not None:
@@ -521,8 +566,11 @@ def train(config):
 
         grad_clip_enabled = grad_clip_value > 0.0
         if grad_clip_enabled:
-            grad_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
-            grad_norm = grad_norm_tensor  # GPU tensor -> CPU float (note: cpu-gpu sync point)
+            if accelerator is None:
+                grad_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
+                grad_norm = grad_norm_tensor  # GPU tensor -> CPU float (note: cpu-gpu sync point)
+            else:
+                grad_norm = accelerator.clip_grad_norm_(model.parameters(), grad_clip_value)
 
         if lr_scheduler is not None:
             lr_scheduler.step(n_steps_done)

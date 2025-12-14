@@ -1,0 +1,66 @@
+model:
+  name: examples.stable_diffusion_lora.model.StableDiffusionModel
+  args:
+    pretrained_model_name_or_path: "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    lora_rank: 256
+    unet_precision: float16
+    vae_precision: float16
+    text_encoder_precision: float16
+  ckpt_path: null
+
+
+dataset:
+  name: examples.stable_diffusion_lora.model.SingleImageDataset
+
+losses:
+
+  mse:
+    weight: 1.0
+    src_key: predicted_noise
+    tgt_key: target_noise
+
+
+summary_functions:
+  - name: examples.stable_diffusion_lora.model.GenerateBasicPreview
+    args:
+      show_imgcat: true
+      prompts: 
+        - "sks"
+      img_size: 384
+
+optimizer_metrics:
+  lr:
+    function_name: opt_learning_rate
+
+sanity: false
+
+train:
+  batch_size: 1
+  gradient_accum_steps: 1
+  
+  n_total_steps: 200
+  n_total_samples: -1
+
+  summary_frequency: 20
+  checkpoint_save_frequency : 100
+
+  grad_clip_value : 1.0
+
+  save_dir: null 
+  device: cuda
+
+
+  optimizer:
+    name: adamw
+    args:
+      lr: 1e-04
+      weight_decay: 1e-2
+    param_groups:
+        - params: ["lora_params" ]
+          lr: 1e-04
+  
+  lr_scheduler:
+    name: train_loop.lr_schedulers.CosineLRScheduler
+    args:
+      total_steps: 200
+    
