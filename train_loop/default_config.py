@@ -71,6 +71,6 @@ DEFAULT_CONFIG = OmegaConf.create({
         "accelerate_mixed_precision": None ,  # bf16 or fp16 or None
 
         "crash_detect_params" : None, 
-        "crash_recovery_mode" : "exit" # exit, resume_from_latest_checkpoint, reinit
+        "crash_recovery_mode" : "resume_from_latest_checkpoint" # exit, resume_from_latest_checkpoint, reinit
     }
 })
