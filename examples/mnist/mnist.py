@@ -30,8 +30,9 @@ class MNISTDataset(torch.utils.data.Dataset):
         return {"inp": inp, "gt_class_id": gt}
 
 class MNISTClassifier(nn.Module):
-    def __init__(self, n_hidden=128):
+    def __init__(self, n_hidden=128, random_add_nan=False):
         super(MNISTClassifier, self).__init__()
+        self.random_add_nan = random_add_nan
         self.fc1 = nn.Linear(28 * 28, n_hidden)
         self.fc2 = nn.Linear(n_hidden, 64)
         self.fc3 = nn.Linear(64, 10)
@@ -39,6 +40,9 @@ class MNISTClassifier(nn.Module):
     def forward(self, x):
         x = x['inp']
         x = x.view(-1, 28 * 28)
+        if self.random_add_nan and torch.rand(1).item() < 0.03:
+            # x = x + 1000000
+            x[0, 0] = float('nan')
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)

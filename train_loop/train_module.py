@@ -26,6 +26,7 @@ from .evaluate_module import evaluate_loss
 from .utils.download import download_file
 from contextlib import nullcontext
 from torch.cuda.amp import GradScaler
+from types import SimpleNamespace
 
 try:
     from accelerate import Accelerator
@@ -53,6 +54,119 @@ def get_compiled_model_with_loss(model, loss_function, device):
     model_with_loss.to(device)
     compiled_model_with_loss = torch.compile(model_with_loss, dynamic=False)
     return compiled_model_with_loss
+
+
+def resume_from_last_checkpoint( resume_config, is_master , device , optimizer, model_module, gan_loss_module, disc_optimizer):
+    """
+    resume_config: An object with attributes:
+        - resume (bool): Whether to resume from the latest checkpoint in save_dir.
+        - save_dir (str): Directory to look for checkpoints.
+        - resume_checkpoint_path (str or None): Specific checkpoint path to resume from.
+        - resume_steps_num (int or None): Step number to resume from if specified.
+    """
+    was_resumed = False
+    n_steps_done = -1
+    if resume_config.resume:
+        # Auto-find latest checkpoint
+        latest_checkpoint, latest_n_steps = get_latest_checkpoint( resume_config.save_dir )
+        if latest_checkpoint:
+            checkpoint = torch.load(latest_checkpoint, map_location=device , weights_only=False)
+            # For DataParallel/DDP, load state_dict to .module
+            model_module.load_state_dict(checkpoint['model_state_dict'])
+            if 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if gan_loss_module is not None and 'gan_loss_state_dict' in checkpoint:
+                gan_loss_module.load_state_dict(checkpoint['gan_loss_state_dict'])
+            if disc_optimizer is not None and 'disc_optimizer_state_dict' in checkpoint:
+                disc_optimizer.load_state_dict(checkpoint['disc_optimizer_state_dict'])
+            n_steps_done = latest_n_steps
+            print(f"Auto-resuming from latest checkpoint: {latest_checkpoint} at step {n_steps_done}")
+            was_resumed = True
+
+            del checkpoint  # free memory
+        else:
+            print("No checkpoints found for resuming, starting from scratch")
+    elif resume_config.resume_checkpoint_path is not None and (os.path.exists(resume_config.resume_checkpoint_path) or resume_config.resume_checkpoint_path.startswith("http")):
+        if resume_config.resume_checkpoint_path.startswith("http"):
+            # Download the checkpoint file
+            if is_master:
+                _ = download_file(resume_config.resume_checkpoint_path)
+            else:
+                time.sleep(2)
+                # Wait for the master to download
+                print("Waiting for master to download checkpoint...")
+                
+            torch.distributed.barrier()
+            print("Loading checkpoint from URL...")
+            checkpoint_path = download_file(resume_config.resume_checkpoint_path)
+            resume_config.resume_checkpoint_path = checkpoint_path
+                
+        # Manual checkpoint path specified
+        checkpoint = torch.load(resume_config.resume_checkpoint_path, map_location=device, weights_only=False)
+        model_module.load_state_dict(checkpoint['model_state_dict'])
+        
+        if 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if gan_loss_module is not None and 'gan_loss_state_dict' in checkpoint:
+            gan_loss_module.load_state_dict(checkpoint['gan_loss_state_dict'])
+        if disc_optimizer is not None and 'disc_optimizer_state_dict' in checkpoint:
+            disc_optimizer.load_state_dict(checkpoint['disc_optimizer_state_dict'])
+        if resume_config.resume_steps_num is not None:
+            n_steps_done = resume_config.resume_steps_num
+        elif 'n_steps_done' in checkpoint:
+            n_steps_done = checkpoint['n_steps_done']
+        print(f"Resuming from specified checkpoint at step {n_steps_done}")
+        was_resumed = True
+        
+        del checkpoint  # free memory
+    return n_steps_done, was_resumed
+
+def save_checkpoint(save_checkpoint_config, is_master  , optimizer, model_module, n_steps_done, loss_history, gan_loss_module, disc_optimizer):
+    if is_master:
+        if save_checkpoint_config.save_dir is not None and not save_checkpoint_config.no_save_weights:
+            checkpoint_path = os.path.join(save_checkpoint_config.save_dir, f'model_step_{n_steps_done}.pt')
+            state_dict = model_module.state_dict()
+            cur_loss = sum(loss_history['total_loss']) /  len(loss_history['total_loss'])
+            to_save = {
+                'n_steps_done': n_steps_done,
+                'model_state_dict': state_dict,
+                'loss': cur_loss,
+            }
+            if gan_loss_module is not None:
+                to_save['gan_loss_state_dict'] = gan_loss_module.state_dict()
+            
+            
+            if save_checkpoint_config.save_separate_stepwise_checkpoints:
+                
+                if save_checkpoint_config.save_optimizer_in_all_checkpoints:
+                    to_save['optimizer_state_dict'] = optimizer.state_dict()
+                    if disc_optimizer is not None:
+                        to_save['disc_optimizer_state_dict'] = disc_optimizer.state_dict()
+                torch.save(to_save, checkpoint_path)
+
+            to_save['optimizer_state_dict'] = optimizer.state_dict()
+            if disc_optimizer is not None:
+                to_save['disc_optimizer_state_dict'] = disc_optimizer.state_dict()
+            torch.save(to_save, os.path.join(save_checkpoint_config.save_dir, 'model_latest.pt'))
+            print(f"Saved checkpoint at step {n_steps_done} to {checkpoint_path}")
+        elif save_checkpoint_config.save_dir is None:
+            pass  # do not save, but do not skip other logic
+        else:
+            print("Skipping checkpoint save (no_save_weights=True)")
+
+def crash_detect(crash_detect_config, metrics_dict):
+    for k , v in crash_detect_config.items():
+        if k in metrics_dict:
+            metric_value = metrics_dict[k]
+            if 'max' in v:
+                if metric_value > v['max']:
+                    print(f"Crash detected: Metric {k} = {metric_value} exceeds max {v['max']}")
+                    return True
+            if 'min' in v:
+                if metric_value < v['min']:
+                    print(f"Crash detected: Metric {k} = {metric_value} below min {v['min']}")
+                    return True
+    return False
 
 
 def train(config):
@@ -125,6 +239,7 @@ def train(config):
 
     is_compile_model = config.train.compile_model
     is_compile_model_with_loss = config.train.is_compile_model_with_loss
+    is_crashed = False
 
     grad_clip_value = config.train.grad_clip_value
 
@@ -249,6 +364,12 @@ def train(config):
                 gan_loss = DDP(gan_loss, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused_parameters)
             elif n_gpus > 1:
                 gan_loss = torch.nn.DataParallel(gan_loss, device_ids=list(range(n_gpus)))
+    gan_loss_module = None
+    
+    if gan_loss is not None:
+        gan_loss_module = gan_loss.module if (is_distributed and accelerator is None) else gan_loss
+    
+    dataset = None
     if is_distributed:
         if is_master:
             print("Loading dataset on master...")
@@ -262,8 +383,6 @@ def train(config):
         torch.distributed.barrier()
     else:
         dataset = build_class(config.dataset)
-            
-
     
     # Setup dataloader
     collate_fn = dataset.collate_fn if hasattr(dataset, 'collate_fn') else None
@@ -311,54 +430,11 @@ def train(config):
    
     disc_optimizer = None
     if gan_loss is not None:
-        disc_optimizer = get_opt(gan_loss, config.train.gan_optimizer, print_summary=is_master)
+        disc_optimizer = get_opt(gan_loss_module, config.train.gan_optimizer, print_summary=is_master)
     
     # Handle checkpoint resuming
-    if config.train.resume:
-        # Auto-find latest checkpoint
-        latest_checkpoint, latest_n_steps = get_latest_checkpoint(config.train.save_dir)
-        if latest_checkpoint:
-            checkpoint = torch.load(latest_checkpoint, map_location=device , weights_only=False)
-            # For DataParallel/DDP, load state_dict to .module
-            model_module.load_state_dict(checkpoint['model_state_dict'])
-            if 'optimizer_state_dict' in checkpoint:
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            n_steps_done = latest_n_steps
-            print(f"Auto-resuming from latest checkpoint: {latest_checkpoint} at step {n_steps_done}")
-
-            del checkpoint  # free memory
-        else:
-            print("No checkpoints found for resuming, starting from scratch")
-    elif config.train.resume_checkpoint_path is not None and (os.path.exists(config.train.resume_checkpoint_path) or config.train.resume_checkpoint_path.startswith("http")):
-        if config.train.resume_checkpoint_path.startswith("http"):
-            # Download the checkpoint file
-            if is_master:
-                _ = download_file(config.train.resume_checkpoint_path)
-            else:
-                time.sleep(2)
-                # Wait for the master to download
-                print("Waiting for master to download checkpoint...")
-                
-            torch.distributed.barrier()
-            print("Loading checkpoint from URL...")
-            checkpoint_path = download_file(config.train.resume_checkpoint_path)
-            config.train.resume_checkpoint_path = checkpoint_path
-                
-        # Manual checkpoint path specified
-        checkpoint = torch.load(config.train.resume_checkpoint_path, map_location=device, weights_only=False)
-        model_module.load_state_dict(checkpoint['model_state_dict'])
-        
-        if 'optimizer_state_dict' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if config.train.resume_steps_num is not None:
-            n_steps_done = config.train.resume_steps_num
-        elif 'n_steps_done' in checkpoint:
-            n_steps_done = checkpoint['n_steps_done']
-        print(f"Resuming from specified checkpoint at step {n_steps_done}")
-        
-        del checkpoint  # free memory
-
-
+    n_steps_done, _ = resume_from_last_checkpoint( config.train, is_master=is_master , device=device , optimizer=optimizer, model_module=model_module, gan_loss_module=gan_loss_module, disc_optimizer=disc_optimizer)
+    
 
     def inf_gen():
         while True:
@@ -427,10 +503,29 @@ def train(config):
         for k in extra_models:
             extra_models[k] = accelerator.prepare(extra_models[k])
 
+    batch_inputs_dict = None
+
     # Training loop
-    for _ in progress_bar:
-        # if use_ddp:
-        #     dataloader.sampler.set_e_poch(e_poch)                
+    while True: # dw it breaks when n_steps_done >= n_total_steps
+
+        if is_distributed:
+            is_crashed = bool((lambda t: torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.MAX) or t.item())(torch.tensor(int(is_crashed), device=device)))
+        
+        if is_crashed:
+            if config.train.crash_recovery_mode == "exit":
+                assert False, "Training crashed ."
+            elif config.train.crash_recovery_mode == "resume_from_latest_checkpoint":
+                n_steps_done , was_loaded = resume_from_last_checkpoint( SimpleNamespace(
+                    resume=True,
+                    save_dir=config.train.save_dir,
+                    resume_checkpoint_path=None,
+                    resume_steps_num=None
+                ), is_master=is_master , device=device , optimizer=optimizer, model_module=model_module)
+                if not was_loaded:
+                    raise RuntimeError("Training crashed no checkpoint found to resume from.")
+                is_crashed = False
+            else:
+                raise ValueError(f"Unknown crash_recovery_mode: {config.train.crash_recovery_mode}")
 
         if summary_frequency > 0 and  n_steps_done % summary_frequency == 0:
             if is_distributed:
@@ -500,12 +595,12 @@ def train(config):
 
                 if gan_loss is not None:
                     assert gradient_accum_steps == 1, "GAN loss with gradient accumulation is not supported yet."
-                    # For DataParallel, access .module if needed
-                    disc_loss_fn = gan_loss
-                    if is_distributed and hasattr(gan_loss, 'module'):
-                        disc_loss_fn = gan_loss.module
+                    # For DataParallel, access .module if needed                    
                     assert model_outputs_detached is not None, "Model outputs should not be None when using GAN loss."
-                    loss_disc = disc_loss_fn.discriminator_loss(batch_inputs_dict, model_outputs_detached)
+                    loss_disc = gan_loss_module.discriminator_loss(batch_inputs_dict, model_outputs_detached)
+                    if torch.any(torch.isnan(loss_disc)):
+                        print("NaN detected in loss at step ", n_steps_done)
+                        is_crashed = True
                     disc_optimizer.zero_grad()
                     if accelerator is not None:
                         accelerator.backward(loss_disc)
@@ -538,10 +633,7 @@ def train(config):
 
                 if gan_loss is not None:
                     assert gradient_accum_steps == 1, "GAN loss with gradient accumulation is not supported yet."
-                    gen_loss_fn = gan_loss
-                    if is_distributed and hasattr(gan_loss, 'module'):
-                        gen_loss_fn = gan_loss.module
-                    gen_loss = gen_loss_fn.generator_loss(batch_inputs_dict, model_outputs)
+                    gen_loss = gan_loss_module.generator_loss(batch_inputs_dict, model_outputs)
                     loss += gen_loss * config.gan_loss.gen_loss_weight
                     losses['gen_loss'] = gen_loss
                     losses['disc_loss'] = loss_disc
@@ -553,6 +645,10 @@ def train(config):
                     (loss / gradient_accum_steps).backward()
                 else:
                     scaler.scale(loss / gradient_accum_steps).backward()
+
+        if torch.any(torch.isnan(loss)):
+            print("NaN detected in loss at step ", n_steps_done)
+            is_crashed = True
 
         grad_metrics = {}
         if "grad_metrics" in config and config.grad_metrics is not None:
@@ -596,6 +692,7 @@ def train(config):
         torch.cuda.synchronize()
         
         n_steps_done += 1
+        
         iter_end_time = time.time()
         
         # Update rolling average for each loss component
@@ -611,7 +708,9 @@ def train(config):
         if grad_clip_enabled:
             losses_plus_metrics['grad_norm'] = grad_norm
 
-        
+        if config.train.crash_detect_params is not None:
+            if crash_detect( config.train.crash_detect_params , losses_plus_metrics):
+                is_crashed = True
 
         for k, v in losses_plus_metrics.items():
             if k not in loss_history:
@@ -674,33 +773,11 @@ def train(config):
         
 
         # Save checkpoint
-        if (n_steps_done % config.train.checkpoint_save_frequency == 0 or n_steps_done >= n_total_steps):
-            if is_master:
-                if config.train.save_dir is not None and not config.train.no_save_weights:
-                    checkpoint_path = os.path.join(config.train.save_dir, f'model_step_{n_steps_done}.pt')
-                    state_dict = model_module.state_dict()
-                    cur_loss = sum(loss_history['total_loss']) /  len(loss_history['total_loss'])
-                    if config.train.save_separate_stepwise_checkpoints:
-                        to_save = {
-                            'n_steps_done': n_steps_done,
-                            'model_state_dict': state_dict,
-                            'loss': cur_loss,
-                        }
-                        if config.train.save_optimizer_in_all_checkpoints:
-                            to_save['optimizer_state_dict'] = optimizer.state_dict()
-                        torch.save(to_save, checkpoint_path)
+        if (n_steps_done % config.train.checkpoint_save_frequency == 0 or n_steps_done >= n_total_steps) and not is_crashed:
+            save_checkpoint(config.train, is_master  , optimizer=optimizer, model_module=model_module, n_steps_done=n_steps_done, loss_history=loss_history, gan_loss_module=gan_loss_module, disc_optimizer=disc_optimizer)
 
-                    torch.save({
-                        'n_steps_done': n_steps_done,
-                        'model_state_dict': state_dict,
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': cur_loss,
-                    }, os.path.join(config.train.save_dir, 'model_latest.pt'))
-                    print(f"Saved checkpoint at step {n_steps_done} to {checkpoint_path}")
-                elif config.train.save_dir is None:
-                    pass  # do not save, but do not skip other logic
-                else:
-                    print("Skipping checkpoint save (no_save_weights=True)")
+        if n_steps_done >= n_total_steps:
+            break
     
     if is_master:
         print("Training completed!")

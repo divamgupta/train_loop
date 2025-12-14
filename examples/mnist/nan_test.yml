@@ -1,0 +1,47 @@
+model:
+  name: examples.mnist.mnist.MNISTClassifier
+  args:
+    n_hidden: 128
+    random_add_nan: true
+  ckpt_path: null
+
+dataset:
+  name: examples.mnist.mnist.MNISTDataset
+  args:
+    train : true
+   
+
+val_dataset:
+  name: examples.mnist.mnist.MNISTDataset
+  args:
+    train: false
+
+losses:
+
+  cce:
+    function_name: cross_entropy_classification_loss
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: gt_class_id
+
+metrics:
+  accuracy:
+    function_name: accuracy_classification
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: gt_class_id
+
+train:
+  
+  n_total_steps: 500 
+  device: cuda
+  checkpoint_save_frequency : 100
+  save_dir: /tmp/aaa
+
+  crash_detect_params:
+    cce:
+      max: 5.0
+  
+  optimizer:
+    name: adam
+    
