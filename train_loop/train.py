@@ -45,17 +45,25 @@ def train_cli():
     n_gpus = config.train.get('n_gpus', 1)
     local_rank_env = os.environ.get('LOCAL_RANK', None)
     # If DDP is enabled, but not run with torchrun (LOCAL_RANK not set), restart with torchrun
+    use_accelerate = config.train.get('use_accelerate', False)
     if use_ddp and local_rank_env is None:
         print("DDP is enabled but not running under torchrun. Restarting with torchrun...")
 
         random_port = 29500 + int.from_bytes(os.urandom(2), "big") % 1000
 
         # Base torchrun command
-        torchrun_cmd = [
-            "torchrun",
-            f"--nproc_per_node={n_gpus}",
-            f"--master_port={random_port}",
-        ]
+        if not use_accelerate:
+            torchrun_cmd = [
+                "torchrun",
+                f"--nproc_per_node={n_gpus}",
+                f"--master_port={random_port}",
+            ]
+        else:
+            torchrun_cmd = [
+                "accelerate",
+                "launch",
+                f"--multi_gpu",
+            ]
 
         # If the script was started with `python -m <module>`, prefer restarting
         # using: torchrun ... python -m <module> <config> ...
@@ -74,7 +82,7 @@ def train_cli():
         # Append any overrides
         torchrun_cmd.extend(args.overrides or [])
         print("Running:", " ".join(torchrun_cmd))
-        os.execvp("torchrun", torchrun_cmd)
+        os.execvp(torchrun_cmd[0], torchrun_cmd)
         return  # Should not reach here
 
     train(config)

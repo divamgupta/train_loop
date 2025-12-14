@@ -56,6 +56,7 @@ DEFAULT_CONFIG = OmegaConf.create({
         "use_bfloat16_autocast": False,
         "use_float16_autocast": False,
         "debug_load_batch_only_once": False,
+        "debug_ddp_sync" : False,
         "no_save_weights": False,
         "save_separate_stepwise_checkpoints": False,
         "save_optimizer_in_all_checkpoints": False,

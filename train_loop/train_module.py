@@ -214,7 +214,7 @@ def train(config):
             if model_with_loss is not None:
                 model_with_loss = torch.nn.DataParallel(model_with_loss, device_ids=list(range(n_gpus)))
 
-    model_module = model.module if is_distributed else model
+    model_module = model.module if (is_distributed and accelerator is None) else model
 
     if is_master:
         print("Model Summary:")
@@ -449,6 +449,11 @@ def train(config):
         torch.cuda.synchronize()
 
         for mini_i in range(gradient_accum_steps):
+
+            if config.train.debug_ddp_sync:
+                print("mini_i:", mini_i, "rank:", local_rank)
+                if is_master:
+                    time.sleep(5)
             
             if config.train.debug_load_batch_only_once:
                 if n_steps_done == 0 and mini_i == 0:
