@@ -422,7 +422,7 @@ def train(config):
                     save_dir=config.train.save_dir,
                     resume_checkpoint_path=None,
                     resume_steps_num=None
-                ), is_master=is_master , device=device , optimizer=optimizer, model_module=model_module)
+                ), is_master=is_master , device=device , optimizer=optimizer, model_module=model_module, gan_loss_module=gan_loss_module, disc_optimizer=disc_optimizer)
                 if not was_loaded:
                     raise RuntimeError("Training crashed no checkpoint found to resume from.")
                 is_crashed = False
