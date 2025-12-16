@@ -19,8 +19,7 @@ DEFAULT_CONFIG = OmegaConf.create({
         } ,
     },
 
-    
-
+    "download_assets" : {}, # To safely download theese assets before training starts
 
     "train": {
         "device": "cuda",

@@ -138,6 +138,7 @@ def train(config):
     if n_total_steps < 0:
         n_total_steps = n_total_samples // effective_batch_size
 
+    
 
     is_compile_model = config.train.compile_model
     is_compile_model_with_loss = config.train.is_compile_model_with_loss
@@ -187,6 +188,15 @@ def train(config):
 
     if accelerator is not None:
         autocast_ctx = nullcontext()
+
+    if config.download_assets is not None :
+        if is_master:
+            for _ , asset_url in config.download_assets.items():
+                download_file(asset_url)
+                print(f"Downloaded asset from {asset_url}")
+
+        if is_distributed:
+            torch.distributed.barrier()
 
 
     if config.train.create_model_meta_init:
@@ -382,9 +392,9 @@ def train(config):
         scaler = GradScaler()
 
     if use_tqdm:
-        progress_bar = tqdm(range(n_steps_done, n_total_steps), desc=f"Step {n_steps_done}/{n_total_steps} - Avg Loss: 0.000000")
+        progress_bar = tqdm(range(0, n_total_steps), desc=f"Step {n_steps_done}/{n_total_steps} - Avg Loss: 0.000000")
     else:
-        progress_bar = range(n_steps_done, n_total_steps)
+        progress_bar = None
 
     iter_times = []
     loss_history = {}
@@ -665,6 +675,8 @@ def train(config):
         loss_str = " | ".join([f"{k}: {sum(history)/len(history):.4f}" for k, history in loss_history.items()])
         if use_tqdm:
             progress_bar.set_description(f"Step {n_steps_done}/{n_total_steps} -  {loss_str}")
+            progress_bar.n = n_steps_done
+            progress_bar.refresh()
         else:
             iter_time = iter_end_time - iter_start_time
             iter_times.append(iter_time)
