@@ -191,9 +191,20 @@ def train(config):
 
     if config.download_assets is not None :
         if is_master:
-            for _ , asset_url in config.download_assets.items():
-                download_file(asset_url)
-                print(f"Downloaded asset from {asset_url}")
+            for _ , asset in config.download_assets.items():
+                # if starts with http then asset is a url
+                if 'url' in asset:
+                    asset_url = asset.url
+                    download_file(asset_url)
+                    print(f"Downloaded asset from {asset_url}")
+                elif 'function' in asset:
+                    download_func = get_obj(asset.function)
+                    if 'args' in asset:
+                        download_func(**asset.args)
+                    else:
+                        download_func()
+                    print(f"Downloaded asset using function {asset.function}")
+
 
         if is_distributed:
             torch.distributed.barrier()
