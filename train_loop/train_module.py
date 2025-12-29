@@ -223,6 +223,14 @@ def train(config):
     else:
         metrics_module = None
 
+    if 'metrics_only_val' in config:
+        if 'name' in config.metrics_only_val:
+            metrics_only_val_module = build_class(config.metrics_only_val)
+        else:
+            metrics_only_val_module = LossModule(**config.metrics_only_val)
+    else:
+        metrics_only_val_module = None
+
     model_with_loss = None
     if is_compile_model:
         if is_compile_model_with_loss:
@@ -659,6 +667,13 @@ def train(config):
                                 metrics_fn = metrics_module.module
                             _ , val_metrics = evaluate_loss(model_module, val_dataloader, metrics_fn, device, num_val_steps=config.train.num_validation_steps, use_tqdm=config.train.validation_use_tqdm)
                             val_loss_components.update(val_metrics)
+                        if metrics_only_val_module is not None:
+                            metrics_only_val_fn = metrics_only_val_module
+                            if is_distributed and hasattr(metrics_only_val_module, 'module'):
+                                metrics_only_val_fn = metrics_only_val_module.module
+                            _ , val_metrics_only = evaluate_loss(model_module, val_dataloader, metrics_only_val_fn, device, num_val_steps=config.train.num_validation_steps, use_tqdm=config.train.validation_use_tqdm)
+                            val_loss_components.update(val_metrics_only)
+                            
                         val_loss_components['total_loss'] = val_loss
                         val_loss_components['step'] = n_steps_done
                         if config.train.save_dir is not None:
