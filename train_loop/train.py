@@ -2,7 +2,7 @@ import argparse
 import os
 import sys
 from omegaconf import OmegaConf
-
+import torch
 
 from .train_module import train
 from .default_config import DEFAULT_CONFIG
@@ -40,9 +40,18 @@ def train_cli():
         OmegaConf.resolve(config)
         print(f"Applied overrides: {args.overrides}")
 
+    if 'gpus' in config and config.gpus is not None and config.gpus != "" and config.gpus != []:
+        if isinstance(config.gpus, int):
+            config.gpus = [config.gpus]
+        if isinstance(config.gpus, str):
+            config.gpus = [int(gpu_id.strip()) for gpu_id in config.gpus.split(',')]
+        os.environ['CUDA_VISIBLE_DEVICES'] = ','.join([str(gpu_id) for gpu_id in config.gpus])
+
     # --- DDP torchrun auto-restart logic ---
     use_ddp = config.train.get('use_ddp', False)
     n_gpus = config.train.get('n_gpus', 1)
+    if n_gpus == 'auto':
+        n_gpus = torch.cuda.device_count()
     local_rank_env = os.environ.get('LOCAL_RANK', None)
     # If DDP is enabled, but not run with torchrun (LOCAL_RANK not set), restart with torchrun
     use_accelerate = config.train.get('use_accelerate', False)

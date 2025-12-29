@@ -85,6 +85,8 @@ def train(config):
     local_rank = int(os.environ.get('LOCAL_RANK', 0)) if use_ddp else 0
     world_size = int(os.environ.get('WORLD_SIZE', 1)) if use_ddp else 1
     n_gpus = config.train.n_gpus
+    if n_gpus == 'auto':
+        n_gpus = torch.cuda.device_count()
 
     gradient_accum_steps = config.train.gradient_accum_steps
 

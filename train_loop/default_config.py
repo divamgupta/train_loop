@@ -21,6 +21,8 @@ DEFAULT_CONFIG = OmegaConf.create({
 
     "download_assets" : {}, # To safely download theese assets before training starts
 
+    "gpus": None,  # List of GPU ids to use (if None, use all available GPUs from env)
+
     "train": {
         "device": "cuda",
 
