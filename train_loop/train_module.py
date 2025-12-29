@@ -474,6 +474,9 @@ def train(config):
 
         torch.cuda.synchronize()
 
+        if gradient_accum_steps < 1:
+            raise ValueError("gradient_accum_steps must be >= 1")
+
         for mini_i in range(gradient_accum_steps):
 
             if config.train.debug_ddp_sync:
