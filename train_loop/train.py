@@ -6,6 +6,7 @@ import torch
 
 from .train_module import train
 from .default_config import DEFAULT_CONFIG
+from .utils.gpu_utils import get_free_gpus_ids
 
 def train_cli():
     parser = argparse.ArgumentParser(description="Train model")
@@ -41,6 +42,9 @@ def train_cli():
         print(f"Applied overrides: {args.overrides}")
 
     if 'gpus' in config and config.gpus is not None and config.gpus != "" and config.gpus != []:
+        if isinstance(config.gpus, str) and config.gpus.lower() == 'auto':
+            config.gpus = get_free_gpus_ids(num=config.train.n_gpus, threshold=0.9)
+            print(f"Auto-selected free GPU IDs: {config.gpus}")
         if isinstance(config.gpus, int):
             config.gpus = [config.gpus]
         if isinstance(config.gpus, str):
