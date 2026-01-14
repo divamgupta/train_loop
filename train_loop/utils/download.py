@@ -3,6 +3,7 @@ import os
 import hashlib
 import getpass
 from urllib.parse import urlparse
+import random
 
 _cached_username = None
 _cached_password = None
@@ -38,6 +39,8 @@ def download_file(url):
         username, password = _get_credentials()
         response = requests.get(url, auth=(username, password))
     response.raise_for_status()
-    with open(file_path, "wb") as f:
+    file_tmp_path = file_path + str(random.randint(0, 10000)) + ".tmp"
+    with open(file_tmp_path, "wb") as f:
         f.write(response.content)
+    os.rename(file_tmp_path, file_path)
     return file_path
