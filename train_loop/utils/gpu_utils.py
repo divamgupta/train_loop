@@ -75,4 +75,4 @@ def get_free_gpus_ids(num, threshold=0.9):
     if len(free_gpus) < num:
         raise RuntimeError(f"Requested {num} free GPUs, but only {len(free_gpus)} available.")
     
-    return free_gpus[:num]
+    return sorted(free_gpus[:num])
