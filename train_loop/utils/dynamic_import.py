@@ -13,7 +13,7 @@ def build_class(config, extra_args={}):
     args = config.get('args', {})
     ckpt_path = config.get('ckpt_path', None)
     if len(extra_args) > 0:
-        args = copy.deepcopy(args)
+        args = {k:args[k] for k in args}
         for k in extra_args:
             args[k] = extra_args[k]
     m = cls(**args)
