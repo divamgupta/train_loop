@@ -4,6 +4,8 @@ import hashlib
 import getpass
 from urllib.parse import urlparse
 import random
+import os 
+import time
 
 _cached_username = None
 _cached_password = None
@@ -17,6 +19,10 @@ def _get_credentials():
     return _cached_username, _cached_password
 
 def download_file(url):
+    
+    rng = random.Random()
+    rng.seed( int(time.time() * 1000000)  + int(os.getpid() ) )
+
     if not url.startswith("http"):
         return url
     download_dir = os.path.expanduser("~/.downloads")
@@ -39,7 +45,7 @@ def download_file(url):
         username, password = _get_credentials()
         response = requests.get(url, auth=(username, password))
     response.raise_for_status()
-    file_tmp_path = file_path + str(random.randint(0, 10000)) + ".tmp"
+    file_tmp_path = file_path + str(rng.randint(0, 10000)) + ".tmp"
     with open(file_tmp_path, "wb") as f:
         f.write(response.content)
     os.rename(file_tmp_path, file_path)
