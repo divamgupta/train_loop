@@ -27,6 +27,7 @@ from .utils.download import download_file
 from contextlib import nullcontext
 from torch.cuda.amp import GradScaler
 from types import SimpleNamespace
+import datetime
 
 try:
     from accelerate import Accelerator
@@ -163,7 +164,7 @@ def train(config):
 
     if accelerator is None:
         if use_ddp:
-            torch.distributed.init_process_group(backend="nccl")
+            torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=config.train.nccl_timeout_minutes)  )
             device = torch.device(f"cuda:{local_rank}")
             torch.cuda.set_device(device)
             print(f"Using DistributedDataParallel on rank {local_rank} of {world_size}")

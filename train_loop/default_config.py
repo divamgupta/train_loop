@@ -70,6 +70,7 @@ DEFAULT_CONFIG = OmegaConf.create({
         "use_grad_scaler": False,
         "use_accelerate" : False,
         "accelerate_mixed_precision": None ,  # bf16 or fp16 or None
+        "nccl_timeout_minutes": 60,
 
         "crash_detect_params" : None, 
         "crash_recovery_mode" : "resume_from_latest_checkpoint" # exit, resume_from_latest_checkpoint, reinit
