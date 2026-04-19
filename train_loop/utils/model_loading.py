@@ -153,7 +153,7 @@ def resume_from_checkpoint( resume_config, is_master , device , optimizer, model
         del checkpoint  # free memory
     return n_steps_done, was_resumed
 
-def save_checkpoint(save_checkpoint_config, is_master  , optimizer, model_module, n_steps_done, loss_history, gan_loss_module, disc_optimizer):
+def save_checkpoint(save_checkpoint_config, is_master  , optimizer, model_module, n_steps_done, loss_history, gan_loss_module, disc_optimizer, force_stepwise_save=False):
     if is_master:
         if save_checkpoint_config.save_dir is not None and not save_checkpoint_config.no_save_weights:
             checkpoint_path = os.path.join(save_checkpoint_config.save_dir, f'model_step_{n_steps_done}.pt')
@@ -166,10 +166,10 @@ def save_checkpoint(save_checkpoint_config, is_master  , optimizer, model_module
             }
             if gan_loss_module is not None:
                 to_save['gan_loss_state_dict'] = gan_loss_module.state_dict()
-            
-            
-            if save_checkpoint_config.save_separate_stepwise_checkpoints:
-                
+
+
+            if save_checkpoint_config.save_separate_stepwise_checkpoints or force_stepwise_save:
+
                 if save_checkpoint_config.save_optimizer_in_all_checkpoints:
                     to_save['optimizer_state_dict'] = optimizer.state_dict()
                     if disc_optimizer is not None:

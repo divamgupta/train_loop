@@ -44,6 +44,7 @@ DEFAULT_CONFIG = OmegaConf.create({
         "batch_size": 2, 
         "num_workers": 0,
         "checkpoint_save_frequency": 1000,
+        "checkpoint_save_iterations": None,  # list of exact iterations to save at (in addition to frequency-based saves)
 
         "save_dir" : None, 
 

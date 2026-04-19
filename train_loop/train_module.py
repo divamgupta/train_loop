@@ -719,8 +719,11 @@ def train(config):
         
 
         # Save checkpoint
-        if (n_steps_done % config.train.checkpoint_save_frequency == 0 or n_steps_done >= n_total_steps) and not is_crashed:
-            save_checkpoint(config.train, is_master  , optimizer=optimizer, model_module=model_module, n_steps_done=n_steps_done, loss_history=loss_history, gan_loss_module=gan_loss_module, disc_optimizer=disc_optimizer)
+        exact_save_iters = config.train.checkpoint_save_iterations
+        is_exact_save = exact_save_iters is not None and n_steps_done in exact_save_iters
+        is_freq_save = n_steps_done % config.train.checkpoint_save_frequency == 0
+        if (is_freq_save or is_exact_save or n_steps_done >= n_total_steps) and not is_crashed:
+            save_checkpoint(config.train, is_master, optimizer=optimizer, model_module=model_module, n_steps_done=n_steps_done, loss_history=loss_history, gan_loss_module=gan_loss_module, disc_optimizer=disc_optimizer, force_stepwise_save=is_exact_save)
 
         if n_steps_done >= n_total_steps:
             break
