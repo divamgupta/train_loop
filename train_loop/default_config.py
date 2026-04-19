@@ -43,8 +43,15 @@ DEFAULT_CONFIG = OmegaConf.create({
         "metrics_rolling_window": 1,
         "batch_size": 2, 
         "num_workers": 0,
+
         "checkpoint_save_frequency": 1000,
         "checkpoint_save_iterations": None,  # list of exact iterations to save at (in addition to frequency-based saves)
+        "no_save_weights": False,
+        "save_separate_stepwise_checkpoints": False,
+        "save_optimizer_in_all_checkpoints": False,
+
+        "resume_checkpoint_path": None,
+        "resume_steps_num": None,
 
         "save_dir" : None, 
 
@@ -59,12 +66,8 @@ DEFAULT_CONFIG = OmegaConf.create({
         "use_float16_autocast": False,
         "debug_load_batch_only_once": False,
         "debug_ddp_sync" : False,
-        "no_save_weights": False,
-        "save_separate_stepwise_checkpoints": False,
-        "save_optimizer_in_all_checkpoints": False,
         "get_optimizer_fn_name": None,
-        "resume_checkpoint_path": None,
-        "resume_steps_num": None,
+
         "n_total_steps": -1 , 
         "n_total_samples" : -1 , 
         "log_iter_time" : False,
