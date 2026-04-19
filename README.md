@@ -250,6 +250,7 @@ The config is loaded with [OmegaConf](https://omegaconf.readthedocs.io/) and mer
 | `resume_checkpoint_path` | str\|null | `null` | Path or URL to specific checkpoint |
 | `resume_steps_num` | int\|null | `null` | Override step count when loading a checkpoint |
 | `checkpoint_save_frequency` | int | `1000` | Save checkpoint every N steps |
+| `checkpoint_save_iterations` | list\|null | `null` | Exact iterations to force-save a `model_step_N.pt` (independent of frequency) |
 | `save_separate_stepwise_checkpoints` | bool | `false` | Save `model_step_N.pt` in addition to `model_latest.pt` |
 | `save_optimizer_in_all_checkpoints` | bool | `false` | Include optimizer state in every stepwise checkpoint |
 | `no_save_weights` | bool | `false` | Disable all checkpoint saving |
@@ -929,7 +930,10 @@ train:
   save_separate_stepwise_checkpoints: true   # save model_step_N.pt
   save_optimizer_in_all_checkpoints: true    # include optimizer in every model_step_N.pt
   no_save_weights: false                     # set true to disable all saving
+  checkpoint_save_iterations: [500, 1500, 7777]   # force-save model_step_N.pt at these exact steps
 ```
+
+`checkpoint_save_iterations` writes a stepwise checkpoint at exactly the listed iterations regardless of `checkpoint_save_frequency` or `save_separate_stepwise_checkpoints`. Useful for pinning checkpoints at eval/publication milestones.
 
 ### Resume from Latest
 
