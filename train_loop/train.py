@@ -11,6 +11,8 @@ from .utils.gpu_utils import get_free_gpus_ids
 def train_cli():
     parser = argparse.ArgumentParser(description="Train model")
     parser.add_argument('config', type=str, help='Path to config YAML file')
+    parser.add_argument('--config2', type=str, default=None,
+                        help='Optional 2nd YAML that overrides keys in the main config (applied after main YAML, before CLI overrides)')
     parser.add_argument('overrides', nargs='*',
                         help='Override config values using dotpath notation (e.g., train.lr=0.001, model.hidden_size=256)')
     args = parser.parse_args()
@@ -20,6 +22,12 @@ def train_cli():
     else:
         config = OmegaConf.load(args.config)
         config = OmegaConf.merge(DEFAULT_CONFIG, config)
+
+    # Apply --config2 YAML overrides (keys must exist in the merged config)
+    if args.config2:
+        config2 = OmegaConf.load(args.config2)
+        config = OmegaConf.merge(config, config2)
+        print(f"Applied --config2: {args.config2}")
     
     # Apply config overrides using OmegaConf CLI
     if args.overrides:
@@ -91,6 +99,10 @@ def train_cli():
         else:
             # Fallback to script path (sys.argv[0]) for normal python script execution
             torchrun_cmd.extend([sys.argv[0], args.config])
+
+        # Forward --config2 if present
+        if args.config2:
+            torchrun_cmd.extend(["--config2", args.config2])
 
         # Append any overrides
         torchrun_cmd.extend(args.overrides or [])
