@@ -75,17 +75,15 @@ def train_cli():
         # Base torchrun command
         if not use_accelerate:
             torchrun_cmd = [
-                "torchrun",
+                "python -m torch.distributed.run",
                 f"--nproc_per_node={n_gpus}",
                 f"--master_port={random_port}",
-                sys.executable,  # Use the current Python interpreter
             ]
         else:
             torchrun_cmd = [
                 "accelerate",
                 "launch",
                 f"--multi_gpu",
-                sys.executable,  # Use the current Python interpreter
             ]
 
         # If the script was started with `python -m <module>`, prefer restarting
