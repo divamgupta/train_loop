@@ -75,7 +75,7 @@ def train_cli():
         # Base torchrun command
         if not use_accelerate:
             torchrun_cmd = [
-                "python -m torch.distributed.run",
+                "python", "-m", "torch.distributed.run",
                 f"--nproc_per_node={n_gpus}",
                 f"--master_port={random_port}",
             ]
