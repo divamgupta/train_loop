@@ -27,7 +27,9 @@
 23. [Tutorials](#23-tutorials)
 24. [Python API](#24-python-api)
 25. [CLI Reference](#25-cli-reference)
-26. [Dataset Demo](#26-dataset-demo)
+26. [Weights & Biases Integration](#26-weights--biases-integration)
+27. [Dataset Demo](#27-dataset-demo)
+
 
 ---
 
@@ -1900,7 +1902,73 @@ with open("/tmp/run/train_loss.jsonl") as f:
 
 ---
 
-## 26. Dataset Demo
+## 26. Weights & Biases Integration
+
+train_loop has built-in [Weights & Biases](https://wandb.ai) support. When enabled, every training metric and validation metric is logged automatically — no extra code required.
+
+### Setup
+
+Install the client:
+
+```bash
+pip install wandb
+```
+
+Authenticate via environment variable (recommended):
+
+```bash
+export WANDB_API_KEY=your_key_here
+```
+
+Or pass the key directly in the config (see below).
+
+### Configuration
+
+Add a `wandb:` block to your YAML config:
+
+```yaml
+wandb:
+  project: my_project       # W&B project name (required)
+  name: my_run_name         # run display name (optional, auto-generated if omitted)
+  entity: my_team           # W&B entity / team (optional)
+  api_key: your_key_here    # optional — prefer WANDB_API_KEY env var instead
+  tags:                     # optional list of tags
+    - experiment_1
+    - baseline
+```
+
+If `wandb:` is omitted or set to `null`, W&B logging is skipped entirely.
+
+### What Gets Logged
+
+| W&B key prefix | Source |
+|----------------|--------|
+| `train/*` | All train losses, metrics, optimizer metrics, grad metrics — logged every `log_frequency` steps |
+| `val/*`   | All validation losses and metrics — logged at every `num_eval_every_steps` |
+
+The full resolved config is also uploaded to the run as W&B config.
+
+### Example
+
+```yaml
+train:
+  batch_size: 16
+  n_total_steps: 100000
+  save_dir: /tmp/my_run
+
+wandb:
+  project: audio_tts
+  name: soprano_film_arch
+  entity: my_org
+```
+
+```bash
+WANDB_API_KEY=xxx python -m train_loop.train configs/my_config.yml
+```
+
+---
+
+## 27. Dataset Demo
 
 `train_loop.dataset_demo` is an interactive Gradio browser for any dataset config. It lets you inspect individual samples — viewing tensors as audio players or images, and all other values as text — without writing any extra code.
 

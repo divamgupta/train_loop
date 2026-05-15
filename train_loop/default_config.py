@@ -21,6 +21,16 @@ DEFAULT_CONFIG = OmegaConf.create({
 
     "download_assets" : {}, # To safely download theese assets before training starts
 
+    # Weights & Biases integration (optional)
+    # W&B is enabled only when wandb.project is set
+    "wandb": {
+        "project": None,   # W&B project name (required to enable logging)
+        "name": None,      # run display name (auto-generated if None)
+        "entity": None,    # team / organization slug
+        "api_key": None,   # login key (prefer WANDB_API_KEY env var)
+        "tags": None,      # list of string tags
+    },
+
     "gpus": None,  # List of GPU ids to use (if None, use all available GPUs from env)
 
     "train": {

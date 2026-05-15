@@ -393,6 +393,23 @@ def train(config):
         with open(out_config_path, 'w') as f:
             OmegaConf.save(config, f)
 
+    # ── Weights & Biases ────────────────────────────────────────────────────
+    wandb_run = None
+    if is_master and 'wandb' in config and config.wandb is not None and config.wandb.get('project') is not None:
+        import wandb as wandb_lib
+        wandb_cfg = OmegaConf.to_container(config.wandb, resolve=True)
+        api_key = wandb_cfg.pop('api_key', None) or os.environ.get('WANDB_API_KEY')
+        if api_key:
+            wandb_lib.login(key=api_key)
+        wandb_run = wandb_lib.init(
+            project=wandb_cfg.get('project'),
+            name=wandb_cfg.get('name'),
+            entity=wandb_cfg.get('entity'),
+            tags=wandb_cfg.get('tags'),
+            config=OmegaConf.to_container(config, resolve=True),
+        )
+        print(f"W&B run initialised: {wandb_run.url}")
+
     # Put models in training/eval mode
     model.train()
 
@@ -657,12 +674,15 @@ def train(config):
                 loss_history[k].pop(0)
         
         # Log training loss to jsonl file every rolling_window steps
-        if config.train.save_dir is not None and n_steps_done % log_frequency == 0:
+        if n_steps_done % log_frequency == 0:
             train_loss_components = {k: sum(v)/len(v) for k, v in loss_history.items()}
             train_loss_components['step'] = n_steps_done
-            train_loss_file = os.path.join(config.train.save_dir, 'train_loss.jsonl')
-            with open(train_loss_file, 'a') as f:
-                f.write(json.dumps(train_loss_components) + '\n')
+            if config.train.save_dir is not None:
+                train_loss_file = os.path.join(config.train.save_dir, 'train_loss.jsonl')
+                with open(train_loss_file, 'a') as f:
+                    f.write(json.dumps(train_loss_components) + '\n')
+            if wandb_run is not None:
+                wandb_run.log({f"train/{k}": v for k, v in train_loss_components.items() if k != 'step'}, step=n_steps_done)
         
         # Run validation if needed
         if eval_frequency > 0 and n_steps_done % eval_frequency == 0:
@@ -699,6 +719,8 @@ def train(config):
                                 f.write(json.dumps(val_loss_components) + '\n')
                         print(f"Validation Loss at step {n_steps_done}: {val_loss:.6f}")
                         print(f"Validation Loss Components: {val_loss_components}")
+                        if wandb_run is not None:
+                            wandb_run.log({f"val/{k}": v for k, v in val_loss_components.items() if k != 'step'}, step=n_steps_done)
 
             if is_distributed:
                 torch.distributed.barrier()
@@ -735,6 +757,8 @@ def train(config):
             print("Max memory reserved:", torch.cuda.max_memory_reserved(device) / (1024 ** 2), "MB")
         if config.train.save_dir is not None:
             print("Saved in " , config.train.save_dir)
+        if wandb_run is not None:
+            wandb_run.finish()
     if use_ddp:
         torch.distributed.destroy_process_group()
     return model
