@@ -27,6 +27,7 @@
 23. [Tutorials](#23-tutorials)
 24. [Python API](#24-python-api)
 25. [CLI Reference](#25-cli-reference)
+26. [Dataset Demo](#26-dataset-demo)
 
 ---
 
@@ -1895,4 +1896,55 @@ with open("/tmp/run/train_loss.jsonl") as f:
     steps = [json.loads(line) for line in f]
 
 # steps[i] = {"step": 100, "total_loss": 1.23, "cce": 1.23, "accuracy": 0.45, ...}
+```
+
+---
+
+## 26. Dataset Demo
+
+`train_loop.dataset_demo` is an interactive Gradio browser for any dataset config. It lets you inspect individual samples — viewing tensors as audio players or images, and all other values as text — without writing any extra code.
+
+### Usage
+
+```bash
+python -m train_loop.dataset_demo configs/my_config.yml
+python -m train_loop.dataset_demo configs/my_config.yml --port 7861 --share
+```
+
+The YAML must contain a top-level `dataset:` key (same format used by `train_loop.train`).
+
+### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `config` | Path to YAML config with a `dataset:` key |
+| `--port` | Gradio server port (default: 7860) |
+| `--share` | Create a public Gradio share link |
+
+### Features
+
+- **Index slider** — scrub through dataset samples; press **Load** to fetch the selected index
+- **Auto-detection** — tensor fields are heuristically identified as audio (1-D float arrays > 1000 samples, or keys containing `audio`/`wav`/`waveform`) or images (CHW tensors, or keys containing `image`/`mel`/`spec`)
+- **Configurable rendering** — override which keys are treated as audio or image using the comma-separated text boxes; changes take effect on the next **Load**
+- **Sample rate control** — set the playback sample rate for audio tensors
+- **Text fallback** — non-tensor values (strings, dicts, lists) are shown as formatted text; tensors that aren't audio/image show shape/dtype/min/max/mean
+
+### Example
+
+```yaml
+# configs/my_audio_dataset.yml
+dataset:
+  name: mydatasets.audio_dataset_v2.AudioDatasetV2
+  args:
+    src_dataset:
+      name: mydatasets.arrow_dataset.JsonDataset
+      args:
+        json_file: assets/my_data.jsonl
+        file_keys_to_load: [audio]
+    audio_key: audio
+    target_sample_rate: [16000, 24000]
+```
+
+```bash
+python -m train_loop.dataset_demo configs/my_audio_dataset.yml --share
 ```

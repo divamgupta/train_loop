@@ -62,7 +62,7 @@ def _get_credentials():
     return _cached_username, _cached_password
 
 
-def download_file(url):
+def download_file(url, silent=False):
     rng = random.Random()
     rng.seed(int(time.time() * 1000000) + int(os.getpid()))
 
@@ -79,9 +79,11 @@ def download_file(url):
     else:
         filename = url_hash
     file_path = os.path.join(download_dir, filename)
-    print(file_path)
+    if not silent:
+        print(file_path)
     if os.path.exists(file_path):
-        print(f"File already exists: {file_path}")
+        if not silent:
+            print(f"File already exists: {file_path}")
         return file_path
 
     # Try with .env creds upfront if available, otherwise unauthenticated first
