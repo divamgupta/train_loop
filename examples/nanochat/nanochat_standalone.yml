@@ -1,0 +1,130 @@
+# Standalone NanoChat config — no pre-downloaded data needed.
+#
+# - Parquet shards are downloaded automatically from HuggingFace on first run
+#   and cached in ~/.downloads/
+# - Uses the gpt2 tiktoken tokenizer (built into the tiktoken library, no download)
+# - vocab_size 50304 = gpt2's 50257 rounded up to the nearest multiple of 128
+#
+# Run (single GPU, ~16 GB VRAM):
+#   python -m train_loop.train examples/nanochat/nanochat_standalone.yml train.batch_size=4
+#
+# Run (single 80 GB GPU, full batch):
+#   python -m train_loop.train examples/nanochat/nanochat_standalone.yml
+
+n_tokens: 1024
+num_layers: 12
+
+n_embd: ${eval:'${num_layers} * 64'}   # 768
+n_heads: ${eval:'max(1, (${n_embd} + 127) // 128)'}  # 6
+
+model:
+  name: examples.nanochat.gpt.GPT
+  args:
+    config:
+      sequence_len: ${n_tokens}
+      vocab_size: 50304   # gpt2 vocab (50257) padded to multiple of 128
+      n_layer: ${num_layers}
+      n_head: ${n_heads}
+      n_kv_head: ${n_heads}
+      n_embd: ${n_embd}
+  ckpt_path: null
+
+# 5 parquet shards from karpathy/fineweb-edu-100b-shuffle (each ~94 MB).
+# The last shard is held out for validation; the first 4 are used for training.
+# Files are downloaded on first run and cached in ~/.downloads/.
+parquet_urls:
+  - https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main/shard_00000.parquet
+  - https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main/shard_00001.parquet
+  - https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main/shard_00002.parquet
+  - https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main/shard_00003.parquet
+  - https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main/shard_00004.parquet
+
+dataset:
+  name: examples.nanochat.dataset.BasicTokensDL
+  args:
+    parquet_files_list: ${parquet_urls}
+    tokenizer_name: gpt2        # tiktoken gpt2 — no download required
+    n_tokens: ${n_tokens}
+    split: train
+
+val_dataset:
+  name: examples.nanochat.dataset.BasicTokensDL
+  args:
+    parquet_files_list: ${parquet_urls}
+    tokenizer_name: gpt2
+    n_tokens: ${n_tokens}
+    split: val
+    len: 400
+
+losses:
+  cce:
+    function_name: examples.nanochat.gpt.llm_cce_loss
+    weight: 1.0
+    src_key: out_logits
+    tgt_key: gt_output_ids
+
+sanity: false
+
+embedding_lr: 0.2
+unembedding_lr: 0.004
+dmodel_lr_scale: ${eval:'(${n_embd} / 768) ** -0.5'}
+
+effective_batch_size: 128
+
+train:
+  batch_size: 16
+  gradient_accum_steps: ${eval:'${effective_batch_size} // ${train.batch_size} // ${train.n_gpus}'}
+
+  n_total_steps: 10000
+
+  num_eval_every_steps: 1000
+  checkpoint_save_frequency: 1000
+  summary_frequency: 500
+
+  save_dir: /tmp/nanochat_standalone
+  device: cuda
+  resume_checkpoint_path: null
+  num_workers: 0
+  resume: false
+
+  n_gpus: 1
+  use_ddp: false
+  find_unused_parameters: false
+  compile_model: true
+  use_bfloat16_autocast: true
+  is_compile_model_with_loss: true
+  create_model_meta_init: true
+  grad_clip_value: 1.0
+
+  optimizer:
+    name: multi
+    optimizers:
+      embeds:
+        name: adamw
+        args:
+          weight_decay: 0.0
+          betas: [0.8, 0.95]
+          eps: 1e-10
+        param_groups:
+          - params: ["transformer.wte"]
+            lr: ${eval:'${embedding_lr} * ${dmodel_lr_scale}'}
+          - params: ["lm_head"]
+            lr: ${eval:'${unembedding_lr} * ${dmodel_lr_scale}'}
+
+      matrix:
+        name: examples.nanochat.muon_opt.Muon
+        args:
+          lr: 0.02
+          momentum: 0.95
+        param_groups:
+          - params: ["transformer.h"]
+            lr: 0.02
+
+  lr_scheduler:
+    name: examples.nanochat.lr_scheduler.AKLRScheduler
+    args:
+      warmup_ratio: 0.0
+      warmdown_ratio: 0.2
+      final_lr_frac: 0.0
+      muon_optimizer_name: matrix
+      total_iterations: ${train.n_total_steps}

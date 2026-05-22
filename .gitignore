@@ -8,6 +8,8 @@ wandb/
 # C extensions
 *.so
 
+.claude/
+.claude.json
 
 # Distribution / packaging
 .Python
