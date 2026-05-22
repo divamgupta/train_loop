@@ -7,6 +7,7 @@ import torch
 from .train_module import train
 from .default_config import DEFAULT_CONFIG
 from .utils.gpu_utils import get_free_gpus_ids
+from .utils.device_utils import set_visible_devices
 
 def train_cli():
     parser = argparse.ArgumentParser(description="Train model")
@@ -57,7 +58,10 @@ def train_cli():
             config.gpus = [config.gpus]
         if isinstance(config.gpus, str):
             config.gpus = [int(gpu_id.strip()) for gpu_id in config.gpus.split(',')]
-        os.environ['CUDA_VISIBLE_DEVICES'] = ','.join([str(gpu_id) for gpu_id in config.gpus])
+        gpu_ids = [int(g) for g in config.gpus]
+        # Sets CUDA_VISIBLE_DEVICES + HIP_VISIBLE_DEVICES (AMD). The HIP var is
+        # inert on NVIDIA/CPU, so this is safe regardless of train.rocm.
+        set_visible_devices(gpu_ids)
 
     # --- DDP torchrun auto-restart logic ---
     use_ddp = config.train.get('use_ddp', False)
@@ -74,8 +78,10 @@ def train_cli():
 
         # Base torchrun command
         if not use_accelerate:
+            # Use sys.executable so the same interpreter (e.g. a conda env) is
+            # re-launched; a bare "python" may not be on PATH.
             torchrun_cmd = [
-                "python", "-m", "torch.distributed.run",
+                sys.executable, "-m", "torch.distributed.run",
                 f"--nproc_per_node={n_gpus}",
                 f"--master_port={random_port}",
             ]

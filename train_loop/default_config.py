@@ -36,6 +36,19 @@ DEFAULT_CONFIG = OmegaConf.create({
     "train": {
         "device": "cuda",
 
+        # Set to true on AMD/ROCm systems. Sharpens device error messages to say
+        # "ROCm" instead of "CUDA". train.device remains a normal PyTorch device
+        # string ("cuda" / "cuda:N") on both vendors. (GPU visibility env vars,
+        # incl. HIP_VISIBLE_DEVICES, are always set when `gpus` is specified.)
+        "rocm": False,
+        # DDP communication backend.
+        # "auto" -> nccl for cuda/rocm (uses RCCL on AMD), gloo for cpu.
+        # Override to "gloo" if RCCL is not available on your AMD system.
+        "ddp_backend": "auto",
+        # autocast device_type override.
+        # "auto" derives from train.device at runtime.
+        "autocast_device_type": "auto",
+
         "pt_single_threaded": True,
         "use_ddp": False,
         "n_gpus": 1,

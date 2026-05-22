@@ -22,6 +22,7 @@ from .utils.git import save_git_state
 from .optimizer import get_opt
 from .utils.model_loading import save_checkpoint, resume_from_checkpoint
 from .utils.model_utils import move_to_device
+from .utils.device_utils import validate_device, get_ddp_backend, get_autocast_device_type
 from .evaluate_module import evaluate_loss
 from .utils.download import download_file
 from contextlib import nullcontext
@@ -73,6 +74,8 @@ def crash_detect(crash_detect_config, metrics_dict):
 
 
 def train(config):
+
+    validate_device(config.train.device, rocm=config.train.get("rocm", False))
 
     if config.train.pt_single_threaded:
         torch.set_num_threads(1)
@@ -164,7 +167,12 @@ def train(config):
 
     if accelerator is None:
         if use_ddp:
-            torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=config.train.nccl_timeout_minutes)  )
+            _ddp_backend = get_ddp_backend(
+                config.train.get("ddp_backend", "auto"),
+                config.train.device,
+            )
+            print(f"[train_loop] DDP backend: {_ddp_backend}")
+            torch.distributed.init_process_group(backend=_ddp_backend, timeout=datetime.timedelta(minutes=config.train.nccl_timeout_minutes)  )
             device = torch.device(f"cuda:{local_rank}")
             torch.cuda.set_device(device)
             print(f"Using DistributedDataParallel on rank {local_rank} of {world_size}")
@@ -182,10 +190,15 @@ def train(config):
 
     is_distributed = use_ddp or n_gpus > 1
 
+    _cfg_ac = config.train.get("autocast_device_type", "auto")
+    _ac_device_type = (
+        _cfg_ac if _cfg_ac != "auto"
+        else get_autocast_device_type(config.train.device)
+    )
     if config.train.use_bfloat16_autocast:
-        autocast_ctx = torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16)
+        autocast_ctx = torch.amp.autocast(device_type=_ac_device_type, dtype=torch.bfloat16)
     elif config.train.use_float16_autocast:
-        autocast_ctx = torch.amp.autocast(device_type='cuda', dtype=torch.float16)
+        autocast_ctx = torch.amp.autocast(device_type=_ac_device_type, dtype=torch.float16)
     else:
         autocast_ctx = nullcontext()
 
@@ -428,7 +441,9 @@ def train(config):
     
     scaler = None
     if config.train.use_grad_scaler:
-        scaler = GradScaler()
+        # bfloat16 has sufficient dynamic range and does not need loss scaling.
+        _use_scaler = config.train.use_float16_autocast and not config.train.use_bfloat16_autocast
+        scaler = GradScaler(enabled=_use_scaler)
 
     if use_tqdm:
         progress_bar = tqdm(range(0, n_total_steps), desc=f"Step {n_steps_done}/{n_total_steps} - Avg Loss: 0.000000")
@@ -492,7 +507,8 @@ def train(config):
 
         iter_start_time = time.time()
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         if gradient_accum_steps < 1:
             raise ValueError("gradient_accum_steps must be >= 1")
@@ -643,7 +659,8 @@ def train(config):
                 opt_metric_fn = get_obj(opt_metric_fn_name )
                 optimizer_metrics[opt_metric_name] = opt_metric_fn(optimizer=optimizer,**opt_metric_conf_copy)
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         
         n_steps_done += 1
         
@@ -752,7 +769,7 @@ def train(config):
     
     if is_master:
         print("Training completed!")
-        if 'cuda' in str(device):
+        if 'cuda' in str(device) and torch.cuda.is_available():
             print("Max memory allocated:", torch.cuda.max_memory_allocated(device) / (1024 ** 2), "MB")
             print("Max memory reserved:", torch.cuda.max_memory_reserved(device) / (1024 ** 2), "MB")
         if config.train.save_dir is not None:

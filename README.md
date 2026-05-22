@@ -29,6 +29,7 @@
 25. [CLI Reference](#25-cli-reference)
 26. [Weights & Biases Integration](#26-weights--biases-integration)
 27. [Dataset Demo](#27-dataset-demo)
+28. [AMD GPU (ROCm) Support](#28-amd-gpu-rocm-support)
 
 
 ---
@@ -69,6 +70,29 @@ pip install accelerate   # for accelerate integration
 - PyTorch 2.0+
 - omegaconf
 - tqdm
+
+### AMD GPUs (ROCm)
+
+train_loop runs on AMD GPUs with no model/dataset changes — PyTorch built against
+ROCm maps AMD GPUs onto the `torch.cuda` API, so `train.device` stays a normal
+`"cuda"` / `"cuda:N"` string. Install the ROCm-flavoured PyTorch wheel matching
+your system ROCm version (check [pytorch.org](https://pytorch.org) for the URL):
+
+```bash
+# Create an isolated environment (conda recommended)
+conda create -y -n train_loop_rocm python=3.11
+conda activate train_loop_rocm
+
+# Install the ROCm PyTorch wheel (example: ROCm 7.2)
+pip install --index-url https://download.pytorch.org/whl/rocm7.2 torch torchvision
+pip install omegaconf tqdm requests
+
+# Verify the GPUs are visible
+python -c "import torch; print(torch.version.hip, torch.cuda.device_count())"
+```
+
+Then set `train.rocm: true` in your config. See [§28 AMD GPU (ROCm) Support](#28-amd-gpu-rocm-support)
+for the full details and runnable MNIST examples (single- and multi-GPU).
 
 ---
 
@@ -752,12 +776,18 @@ train_loop **automatically restarts itself with `torchrun`** if DDP is requested
 python train.py config.yml  # → auto-restarts as: torchrun --nproc_per_node=4 ...
 ```
 
-The NCCL process group is initialized with a configurable timeout:
+The process group backend is resolved from `train.ddp_backend` (default `"auto"`):
+`nccl` for CUDA/ROCm — on AMD this is RCCL, which speaks the same wire protocol —
+and `gloo` for CPU. The timeout is configurable:
 
 ```yaml
 train:
+  ddp_backend: auto         # auto | nccl | gloo
   nccl_timeout_minutes: 60  # default: 60 minutes
 ```
+
+> On AMD GPUs, set `train.rocm: true`. DDP works identically — see
+> [§28 AMD GPU (ROCm) Support](#28-amd-gpu-rocm-support).
 
 ### DataParallel (Single-Node, No torchrun)
 
@@ -1129,15 +1159,18 @@ train:
   n_gpus: 2
 ```
 
-Queries GPU memory usage and selects the `n_gpus` least-utilized GPUs (below 90% memory usage threshold).
+Queries GPU memory usage and selects the `n_gpus` least-utilized GPUs (below 90% memory usage threshold). The query tool is auto-detected: `nvidia-smi` on NVIDIA systems, `rocm-smi` on AMD/ROCm systems.
 
 ### Environment Variable
 
-If `gpus` is not set, `CUDA_VISIBLE_DEVICES` is not modified, so whatever is set in the environment is used. You can set it externally:
+If `gpus` is not set, the visibility env vars are not modified, so whatever is set in the environment is used. You can set them externally:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1,3 python train.py config.yml
+CUDA_VISIBLE_DEVICES=1,3 python train.py config.yml          # NVIDIA
+HIP_VISIBLE_DEVICES=1,3  python train.py config.yml          # AMD / ROCm
 ```
+
+When `gpus` is set, train_loop sets both `CUDA_VISIBLE_DEVICES` and `HIP_VISIBLE_DEVICES` (the latter is inert on NVIDIA), so device selection works on either vendor without needing `train.rocm`. It does **not** set `ROCR_VISIBLE_DEVICES`, which filters at a lower level than `HIP_VISIBLE_DEVICES` — setting both would double-filter and hide the requested GPUs.
 
 ---
 
@@ -2016,3 +2049,89 @@ dataset:
 ```bash
 python -m train_loop.dataset_demo configs/my_audio_dataset.yml --share
 ```
+
+---
+
+## 28. AMD GPU (ROCm) Support
+
+train_loop runs on AMD GPUs (e.g. Instinct MI200 / MI300) through ROCm with **no
+changes to your model or dataset code**. PyTorch built against ROCm maps AMD GPUs
+onto the `torch.cuda` API, so `train.device` remains a normal `"cuda"` / `"cuda:N"`
+string on both vendors. A single flag — `train.rocm: true` — turns on the
+AMD-specific side effects (HIP visibility env vars and clearer device errors).
+
+### Setup
+
+Install the ROCm-flavoured PyTorch wheel matching your system ROCm version (see
+[§2 Installation](#2-installation) for the conda recipe). Quick check:
+
+```bash
+python -c "import torch; print('hip', torch.version.hip, '| gpus', torch.cuda.device_count())"
+# e.g. -> hip 7.2.53211 | gpus 8
+```
+
+### Config keys
+
+These keys live under `train:` (all optional, NVIDIA-safe defaults):
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `rocm` | `false` | Sharpens device error messages to say "ROCm" instead of "CUDA". (GPU visibility env vars are set whenever `gpus` is specified, regardless of this flag.) |
+| `ddp_backend` | `"auto"` | DDP backend. `auto` → `nccl` for CUDA/ROCm (RCCL on AMD), `gloo` for CPU. Override to `"gloo"` if RCCL is unavailable. |
+| `autocast_device_type` | `"auto"` | autocast `device_type`. `auto` derives it from `train.device` (`cuda` for GPU, `cpu` for CPU). |
+
+If `train.device` points at a GPU that is not available, training fails fast with a
+clear message instead of a cryptic crash later:
+
+```
+RuntimeError: train.device is 'cuda:0' but no ROCm GPU was found.
+Check your drivers/toolkit installation, or set train.device to 'cpu'.
+```
+
+### Single AMD GPU
+
+Config: [`examples/mnist/rocm_single_gpu.yml`](examples/mnist/rocm_single_gpu.yml)
+
+```yaml
+train:
+  device: "cuda:0"
+  rocm: true
+  n_gpus: 1
+  use_ddp: false
+  use_bfloat16_autocast: true   # MI200+ / MI300 support bf16 natively
+  compile_model: false          # torch.compile on ROCm is experimental
+```
+
+```bash
+python train.py examples/mnist/rocm_single_gpu.yml
+```
+
+### Multi-GPU AMD (DDP)
+
+Config: [`examples/mnist/rocm_multi_gpu.yml`](examples/mnist/rocm_multi_gpu.yml)
+
+```yaml
+gpus: [0, 1, 2, 3]              # explicit ids, or "auto" (selected via rocm-smi)
+train:
+  device: "cuda:0"
+  rocm: true
+  n_gpus: 4
+  use_ddp: true
+  ddp_backend: auto             # -> nccl (= RCCL on ROCm)
+  use_bfloat16_autocast: true
+```
+
+Launch identically to the NVIDIA DDP path — train_loop auto-restarts under
+`torchrun`:
+
+```bash
+python train.py examples/mnist/rocm_multi_gpu.yml
+# equivalently: torchrun --nproc_per_node=4 train.py examples/mnist/rocm_multi_gpu.yml
+```
+
+### Gotchas
+
+- **`torch.compile`** on ROCm is experimental. Set `compile_model: false` if you hit errors.
+- **RCCL** is bundled with the ROCm PyTorch wheel. If you built PyTorch from source without it, set `ddp_backend: "gloo"` (slower, but always available).
+- **bfloat16** is native on AMD CDNA2+ (MI200) and RDNA3. On older cards (RX 6000 / MI100) use `use_float16_autocast: true` instead.
+- **Visibility env vars**: when `gpus` is set, train_loop sets `CUDA_VISIBLE_DEVICES` + `HIP_VISIBLE_DEVICES`. It avoids `ROCR_VISIBLE_DEVICES` on purpose — ROCR filters devices at a lower level than HIP, so setting both double-filters and can hide the GPUs you asked for (e.g. selecting GPU 2 yields zero visible devices). To select GPUs from the shell instead, use `HIP_VISIBLE_DEVICES` **or** `ROCR_VISIBLE_DEVICES`, not both.

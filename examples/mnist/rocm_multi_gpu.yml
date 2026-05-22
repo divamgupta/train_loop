@@ -1,0 +1,68 @@
+# MNIST on multiple AMD GPUs (ROCm) via DistributedDataParallel.
+#
+# train_loop auto-restarts itself under torchrun when use_ddp is true, so you
+# launch it exactly like the NVIDIA path:
+#   python train.py examples/mnist/rocm_multi_gpu.yml
+#
+# On AMD the "nccl" backend resolves to RCCL (bundled with the ROCm PyTorch
+# wheel) — see train.ddp_backend below. Set `gpus: auto` to let train_loop pick
+# the least-used GPUs via rocm-smi instead of listing them explicitly.
+
+model:
+  name: examples.mnist.mnist.MNISTClassifier
+  args:
+    n_hidden: 128
+  ckpt_path: null
+
+dataset:
+  name: examples.mnist.mnist.MNISTDataset
+  args:
+    train: true
+
+val_dataset:
+  name: examples.mnist.mnist.MNISTDataset
+  args:
+    train: false
+
+losses:
+  cce:
+    function_name: cross_entropy_classification_loss
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: gt_class_id
+
+metrics:
+  accuracy:
+    function_name: accuracy_classification
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: gt_class_id
+
+gpus: [0, 1, 2, 3]            # physical GPU ids to expose (or set to "auto")
+
+train:
+  batch_size: 64
+  n_total_steps: 500
+
+  checkpoint_save_frequency: 250
+  summary_frequency: 0
+  num_eval_every_steps: 250
+
+  save_dir: /tmp/mnist_rocm_multi
+  device: "cuda:0"
+
+  # --- AMD / ROCm + DDP ---
+  rocm: true                  # sets HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES
+  n_gpus: 4
+  use_ddp: true
+  ddp_backend: auto           # -> nccl (= RCCL on ROCm); use "gloo" if no RCCL
+  nccl_timeout_minutes: 60
+  use_bfloat16_autocast: true
+  compile_model: false        # torch.compile on ROCm is experimental
+  find_unused_parameters: false
+  gradient_accum_steps: 1
+
+  num_workers: 2
+
+  optimizer:
+    name: adam
