@@ -22,7 +22,7 @@ class AKLRScheduler:
         def get_lr_multiplier(it):
             warmup_iters = round(warmup_ratio * num_iterations)
             warmdown_iters = round(warmdown_ratio * num_iterations)
-            if it < warmup_iters:
+            if warmup_iters > 0 and it < warmup_iters:
                 return (it + 1) / warmup_iters
             elif it <= num_iterations - warmdown_iters:
                 return 1.0
