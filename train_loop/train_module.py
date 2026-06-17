@@ -416,9 +416,12 @@ def train(config):
         api_key = wandb_cfg.pop('api_key', None) or os.environ.get('WANDB_API_KEY')
         if api_key:
             wandb_lib.login(key=api_key)
+        wandb_name = wandb_cfg.get('name')
+        if config.get('sanity', False):
+            wandb_name = f"__sanity__{wandb_name or ''}"
         wandb_run = wandb_lib.init(
             project=wandb_cfg.get('project'),
-            name=wandb_cfg.get('name'),
+            name=wandb_name,
             entity=wandb_cfg.get('entity'),
             tags=wandb_cfg.get('tags'),
             config=OmegaConf.to_container(config, resolve=True),
