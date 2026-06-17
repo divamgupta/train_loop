@@ -57,9 +57,12 @@ def save_git_state(save_dir):
             print(f"Saved uncommitted changes to: {patch_file}")
             print(f"  Apply with: git apply {patch_file}")
         
-        # Save untracked files separately
+        # Save untracked files — include contents for small files (<400KB),
+        # list name only for larger files (reading large/binary files can
+        # block for minutes and cause DDP NCCL timeouts)
         if untracked_files:
             untracked_file_path = os.path.join(save_dir, f'untracked_files_{current_hash[:8]}.txt')
+            max_content_size = 400 * 1024  # 400 KB
             with open(untracked_file_path, 'w') as f:
                 f.write("# Untracked files at training time\n")
                 f.write(f"# Commit: {current_hash}\n\n")
@@ -68,11 +71,15 @@ def save_git_state(save_dir):
                     f.write(f"# File: {untracked_file}\n")
                     f.write(f"{'='*80}\n")
                     try:
-                        with open(untracked_file, 'r', encoding='utf-8', errors='ignore') as uf:
-                            file_content = uf.read()
-                        f.write(file_content)
-                        if not file_content.endswith('\n'):
-                            f.write('\n')
+                        file_size = os.path.getsize(untracked_file)
+                        if file_size <= max_content_size:
+                            with open(untracked_file, 'r', encoding='utf-8', errors='ignore') as uf:
+                                file_content = uf.read()
+                            f.write(file_content)
+                            if not file_content.endswith('\n'):
+                                f.write('\n')
+                        else:
+                            f.write(f"# Skipped: {file_size / 1024:.0f} KB (>{max_content_size // 1024} KB limit)\n")
                     except Exception as e:
                         f.write(f"# Error reading file: {e}\n")
             print(f"Saved {len(untracked_files)} untracked file(s) to: {untracked_file_path}")

@@ -1,8 +1,10 @@
-import sys 
+import sys
 sys.path.append(".")
 
 import os
 import torch
+import torch.multiprocessing as mp
+mp.set_sharing_strategy('file_descriptor')
 
 # Add these lines to limit threading
 # os.environ["OMP_NUM_THREADS"] = "1"
