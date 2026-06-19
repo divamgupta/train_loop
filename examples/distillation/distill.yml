@@ -1,0 +1,67 @@
+# Knowledge Distillation: EfficientNet-B0 → Small CNN on CIFAR-10
+#
+# The teacher (EfficientNet-B0, pretrained on ImageNet) runs via
+# extra_models + post_process_batch, producing teacher_logits.
+#
+# The student (tiny 3-layer CNN, ~50K params) is trained with:
+#   - Hard label loss: cross-entropy vs ground truth (weight 1.0)
+#   - Soft label loss: KL divergence vs teacher logits (weight 1.0, T=4)
+#
+# Run:
+#   python -m train_loop.train examples/distillation/distill.yml
+
+model:
+  name: examples.distillation.distill.SmallCNN
+  args:
+    n_channels: 32
+  ckpt_path: null
+
+extra_models:
+  teacher:
+    name: examples.distillation.distill.EfficientNetTeacher
+
+dataset:
+  name: examples.distillation.distill.CIFAR10Dataset
+  args:
+    train: true
+
+val_dataset:
+  name: examples.distillation.distill.CIFAR10Dataset
+  args:
+    train: false
+
+losses:
+  hard_label:
+    function_name: cross_entropy_classification_loss
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: gt_class_id
+
+  soft_label:
+    function_name: examples.distillation.distill.distillation_loss
+    weight: 1.0
+    src_key: pred_logits
+    tgt_key: teacher_logits
+    temperature: 4.0
+
+metrics:
+  accuracy:
+    function_name: accuracy_classification
+    src_key: pred_logits
+    tgt_key: gt_class_id
+
+train:
+  batch_size: 64
+  n_total_steps: 2000
+  save_dir: /tmp/distillation_example
+  device: cuda
+  num_workers: 0
+
+  optimizer:
+    name: adam
+    args:
+      lr: 0.001
+
+  num_eval_every_steps: 500
+  checkpoint_save_frequency: 1000
+  summary_frequency: 1000
