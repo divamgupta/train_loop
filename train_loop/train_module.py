@@ -419,13 +419,28 @@ def train(config):
         wandb_name = wandb_cfg.get('name')
         if config.get('sanity', False):
             wandb_name = f"__sanity__{wandb_name or ''}"
+        # Resume existing W&B run if ID was saved from a previous run
+        wandb_id = None
+        if config.train.save_dir is not None:
+            wandb_id_file = os.path.join(config.train.save_dir, 'wandb_id.txt')
+            if os.path.exists(wandb_id_file):
+                with open(wandb_id_file, 'r') as f:
+                    wandb_id = f.read().strip()
+                print(f"Resuming W&B run: {wandb_id}")
         wandb_run = wandb_lib.init(
+            id=wandb_id,
+            resume="allow" if wandb_id else None,
             project=wandb_cfg.get('project'),
             name=wandb_name,
             entity=wandb_cfg.get('entity'),
             tags=wandb_cfg.get('tags'),
             config=OmegaConf.to_container(config, resolve=True),
         )
+        # Save W&B run ID for future resumption
+        if config.train.save_dir is not None:
+            wandb_id_file = os.path.join(config.train.save_dir, 'wandb_id.txt')
+            with open(wandb_id_file, 'w') as f:
+                f.write(wandb_run.id)
         print(f"W&B run initialised: {wandb_run.url}")
 
     # Put models in training/eval mode
