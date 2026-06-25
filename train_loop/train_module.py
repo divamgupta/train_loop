@@ -541,7 +541,7 @@ def train(config):
                     time.sleep(5)
             
             if config.train.debug_load_batch_only_once:
-                if n_steps_done == 0 and mini_i == 0:
+                if batch_inputs_dict is None:
                     batch_inputs_dict = next(data_generator)
             else:
                 batch_inputs_dict = next(data_generator)
