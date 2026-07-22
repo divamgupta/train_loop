@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
 """
-Generic single-thread generator to stream rows (with decoded audio) from a parquet
-object in any S3-compatible store (R2, S3, ...), without the huggingface `datasets`
-or `torchcodec` dependencies — but matching their streaming robustness:
+Generic single-thread generator to stream rows from a parquet object in any
+S3-compatible store (R2, S3, ...), without the huggingface `datasets` dependency:
 
   * row-group streaming via HTTP range reads (never downloads the whole file),
   * every network read retried (by default FOREVER, with capped backoff) on
-    hang / disconnect / 5xx / rate-limit — built for long training runs,
-  * lazy per-row audio decode with soundfile (robust for Opus via libsndfile).
+    hang / disconnect / 5xx / rate-limit — built for long training runs.
 
     from stream_parquet import stream_parquet_rows, CloudStorageConfig
     cfg = CloudStorageConfig(bucket="granary", endpoint_url="https://...",
                              access_key_id="...", secret_access_key="...")
     for row in stream_parquet_rows(cfg, "chunked_parquet/.../..._chunk_000400.parquet"):
-        wav = row["audio"]["array"]          # float32 np.ndarray, mono
-        sr  = row["audio"]["sampling_rate"]
         text = row["text"]
 
-Everything (fetch, parquet decode, audio decode) runs in the calling thread.
+Everything (fetch, parquet decode) runs in the calling thread.
+Audio decoding is NOT handled here — use MultiParquetAudioDataset for that.
 """
 import io
 import logging
@@ -25,9 +22,7 @@ import time
 from dataclasses import dataclass
 
 import boto3
-import numpy as np
 import pyarrow.parquet as pq
-import soundfile as sf
 from botocore.config import Config
 from botocore.exceptions import (
     ClientError, ConnectionError as BotoConnectionError,
@@ -180,30 +175,14 @@ class RobustS3File:
         self._cache = b""
 
 
-# ── audio decode ──────────────────────────────────────────────────────────────
-
-def _decode_audio(a, target_sr=None):
-    if not a or a.get("bytes") is None:
-        return {"array": np.zeros(0, np.float32), "sampling_rate": target_sr or 16000, "path": None}
-    arr, sr = sf.read(io.BytesIO(a["bytes"]), dtype="float32", always_2d=False)
-    if arr.ndim > 1:
-        arr = arr.mean(axis=1).astype(np.float32)
-    if target_sr and target_sr != sr:
-        import soxr
-        arr = soxr.resample(arr, sr, target_sr).astype(np.float32)
-        sr = target_sr
-    return {"array": arr, "sampling_rate": int(sr), "path": a.get("path")}
-
-
 # ── the generator ─────────────────────────────────────────────────────────────
 
-def stream_parquet_rows(config: CloudStorageConfig, key, s3=None, decode_audio=True,
-                        target_sampling_rate=None, batch_size=64, columns=None,
+def stream_parquet_rows(config: CloudStorageConfig, key, s3=None,
+                        batch_size=64, columns=None,
                         bulk=False, max_retries=None):
     """
     Stream rows from `key` (full object path) in `config.bucket`. Yields one dict per
-    row; 'audio' -> {'array': float32 np.ndarray (mono), 'sampling_rate': int,
-    'path': str} when decode_audio, else raw {'bytes','path'}.
+    row with raw column values (no audio decoding — handle that downstream).
 
     config:  CloudStorageConfig (bucket + endpoint + credentials).
     key:     full object key, e.g. "chunked_parquet/<folder>/<name>.parquet".
@@ -211,7 +190,6 @@ def stream_parquet_rows(config: CloudStorageConfig, key, s3=None, decode_audio=T
     bulk:    True = one retried GET into memory (fastest for ~200 MB files);
              False (default) = row-group streaming via ranged reads.
     columns: subset to fetch, e.g. ['audio','text'].
-    target_sampling_rate: resample audio to this rate (requires `soxr`).
     max_retries: None (default) = retry network errors FOREVER (never give up), for
                  long training runs. Set an int to cap. Genuine errors always raise.
     """
@@ -226,14 +204,16 @@ def stream_parquet_rows(config: CloudStorageConfig, key, s3=None, decode_audio=T
         src = RobustS3File(s3, bucket, key, max_retries=max_retries)
 
     pf = pq.ParquetFile(src)
+    row_idx = 0
     try:
         for batch in pf.iter_batches(batch_size=batch_size, columns=columns):
             cols = batch.to_pydict()
             keys = list(cols.keys())
             for i in range(batch.num_rows):
                 row = {k: cols[k][i] for k in keys}
-                if decode_audio and "audio" in row:
-                    row["audio"] = _decode_audio(row["audio"], target_sampling_rate)
+                row["__source_parquet__"] = key
+                row["__row_index__"] = row_idx
+                row_idx += 1
                 yield row
     finally:
         if isinstance(src, RobustS3File):

@@ -1,12 +1,13 @@
 """
-Multi-parquet streamer — yields rows from multiple parquet files sequentially.
+Multi-parquet streamer — yields rows from multiple parquet files.
 
-Wraps stream_parquet_rows to iterate over many parquet files. Supports three
-input modes:
+Wraps stream_parquet_rows to iterate over many parquet files. Supports:
 
   1. Explicit list of parquet keys
   2. A generator/iterator that yields parquet keys
   3. S3/R2 bucket listing with optional prefix and contains filter
+  4. Weighted sampling by keyword — assign weights to keywords and files
+     matching those keywords are sampled proportionally.
 
 Usage:
 
@@ -16,31 +17,24 @@ Usage:
     cfg = CloudStorageConfig(bucket="granary", endpoint_url="...",
                              access_key_id="...", secret_access_key="...")
 
-    # 1. From a list of keys
+    # From a list of keys
     for row in multi_stream_parquet(cfg, keys=["path/a.parquet", "path/b.parquet"]):
         print(row)
 
-    # 2. From a generator
-    def my_gen():
-        for i in range(100):
-            yield f"chunked_parquet/data_chunk_{i:06d}.parquet"
-    for row in multi_stream_parquet(cfg, keys_generator=my_gen()):
-        print(row)
-
-    # 3. From bucket listing (list all parquets under a prefix)
+    # From bucket listing with prefix
     for row in multi_stream_parquet(cfg, prefix="chunked_parquet/en_yodas/"):
         print(row)
 
-    # 4. Bucket listing with contains filter
-    for row in multi_stream_parquet(cfg, prefix="chunked_parquet/", contains="en_yodas"):
+    # Weighted sampling by keyword (e.g. 3x more "yodas" than "librilight")
+    weights = {"yodas": 3.0, "librilight": 1.0, "voxpopuli": 0.5}
+    for row in multi_stream_parquet(cfg, prefix="chunked_parquet/", keyword_weights=weights):
         print(row)
-
-    # All modes support shuffle, loop, and all stream_parquet_rows kwargs.
 """
 
 import logging
 import random
-from typing import Iterator, List, Optional, Union
+from collections import defaultdict
+from typing import Dict, Iterator, List, Optional, Union
 
 from .stream_parquet import CloudStorageConfig, make_client, stream_parquet_rows
 
@@ -63,18 +57,65 @@ def _list_parquet_keys(s3, bucket, prefix, contains=None, suffix=".parquet"):
     return keys
 
 
+def _assign_weights(keys, keyword_weights):
+    """Assign a sampling weight to each key based on keyword matches.
+
+    A key's weight is the weight of the FIRST matching keyword found in its path.
+    Keys that match no keyword get weight 0 and are excluded.
+
+    Args:
+        keys: list of parquet file paths.
+        keyword_weights: {"keyword": weight, ...}
+
+    Returns:
+        (filtered_keys, weights) — parallel lists, only keys with weight > 0.
+    """
+    filtered_keys = []
+    weights = []
+    unmatched = []
+
+    # Sort keywords longest-first so more specific keywords match before shorter ones
+    # e.g. "non_en_yodas" matches before "en_yodas"
+    sorted_keywords = sorted(keyword_weights.items(), key=lambda kv: -len(kv[0]))
+
+    for key in keys:
+        matched = False
+        for keyword, w in sorted_keywords:
+            if keyword in key:
+                filtered_keys.append(key)
+                weights.append(w)
+                matched = True
+                break
+        if not matched:
+            unmatched.append(key)
+
+    # Log summary
+    by_keyword = defaultdict(int)
+    for key, w in zip(filtered_keys, weights):
+        for keyword, _ in sorted_keywords:
+            if keyword in key:
+                by_keyword[keyword] += 1
+                break
+
+    for keyword, count in sorted(by_keyword.items()):
+        log.info("  keyword %r: %d files, weight=%.2f", keyword, count, keyword_weights[keyword])
+    if unmatched:
+        log.info("  %d files matched no keyword (excluded)", len(unmatched))
+
+    return filtered_keys, weights
+
+
 def multi_stream_parquet(
     config: CloudStorageConfig,
     keys: Optional[List[str]] = None,
     keys_generator: Optional[Iterator[str]] = None,
     prefix: Optional[str] = None,
     contains: Optional[str] = None,
+    keyword_weights: Optional[Dict[str, float]] = None,
     shuffle: bool = False,
     loop: bool = False,
     seed: Optional[int] = None,
     # Passed through to stream_parquet_rows:
-    decode_audio: bool = True,
-    target_sampling_rate: Optional[int] = None,
     batch_size: int = 64,
     columns: Optional[List[str]] = None,
     bulk: bool = False,
@@ -89,20 +130,22 @@ def multi_stream_parquet(
       prefix:          list all .parquet files under this S3 prefix
 
     Args:
-      config:        CloudStorageConfig for the bucket.
-      keys:          list of parquet keys to stream from.
-      keys_generator: iterator that yields parquet keys.
-      prefix:        S3 prefix to list parquet files from.
-      contains:      filter listed keys to those containing this substring.
-      shuffle:       shuffle the key order (only for keys/prefix mode, not generator).
-      loop:          loop forever over the files (for training).
-      seed:          random seed for shuffle reproducibility.
-      decode_audio:  decode audio columns (default True).
-      target_sampling_rate: resample audio to this rate.
-      batch_size:    pyarrow batch size per row-group read.
-      columns:       subset of columns to read.
-      bulk:          download whole file at once (vs row-group streaming).
-      max_retries:   None = retry forever on network errors.
+      config:          CloudStorageConfig for the bucket.
+      keys:            list of parquet keys to stream from.
+      keys_generator:  iterator that yields parquet keys.
+      prefix:          S3 prefix to list parquet files from.
+      contains:        filter listed keys to those containing this substring.
+      keyword_weights: dict of {"keyword": weight}. Files matching a keyword
+                       are sampled with probability proportional to weight.
+                       Files matching no keyword are excluded.
+                       e.g. {"yodas": 3.0, "librilight": 1.0, "voxpopuli": 0.5}
+      shuffle:         shuffle the key order (for keys/prefix mode).
+      loop:            loop forever over the files (for training).
+      seed:            random seed for reproducibility.
+      batch_size:      pyarrow batch size per row-group read.
+      columns:         subset of columns to read.
+      bulk:            download whole file at once (vs row-group streaming).
+      max_retries:     None = retry forever on network errors.
 
     Yields:
       dict per row, same as stream_parquet_rows.
@@ -124,8 +167,6 @@ def multi_stream_parquet(
 
     # Stream kwargs passed through to stream_parquet_rows
     stream_kwargs = dict(
-        decode_audio=decode_audio,
-        target_sampling_rate=target_sampling_rate,
         batch_size=batch_size,
         columns=columns,
         bulk=bulk,
@@ -133,7 +174,6 @@ def multi_stream_parquet(
     )
 
     if keys_generator is not None:
-        # Generator mode: can't shuffle or know total count upfront
         if loop:
             raise ValueError("loop=True is not supported with keys_generator "
                              "(generator can only be consumed once)")
@@ -142,15 +182,26 @@ def multi_stream_parquet(
             yield from stream_parquet_rows(config, key, s3=s3, **stream_kwargs)
         return
 
-    # List mode (keys from explicit list or prefix listing)
+    # Apply keyword weights if provided
+    if keyword_weights is not None:
+        keys, weights = _assign_weights(keys, keyword_weights)
+        if not keys:
+            raise ValueError("No parquet files matched any keyword in keyword_weights")
+        log.info("Weighted sampling: %d files across %d keywords", len(keys), len(keyword_weights))
+
     rng = random.Random(seed)
     iteration = 0
 
     while True:
         iteration += 1
-        order = list(keys)
-        if shuffle:
-            rng.shuffle(order)
+
+        if keyword_weights is not None:
+            # Weighted random sampling: pick files proportional to their keyword weight
+            order = rng.choices(keys, weights=weights, k=len(keys))
+        else:
+            order = list(keys)
+            if shuffle:
+                rng.shuffle(order)
 
         for key in order:
             log.info("Streaming from %s (iteration %d)", key, iteration)
@@ -158,6 +209,84 @@ def multi_stream_parquet(
 
         if not loop:
             break
+
+
+class MultiParquetDataset:
+    """PyTorch Dataset that streams from multiple parquet files.
+
+    Ignores index — each call to __getitem__ returns the next row from
+    the underlying multi_stream_parquet generator. Set loop=True (default)
+    so the generator never exhausts.
+
+    Usage in train_loop config:
+        dataset:
+          name: train_loop.datasets.multi_parquet_streamer.MultiParquetDataset
+          args:
+            bucket: granary
+            endpoint_url: https://...
+            access_key_id: ...
+            secret_access_key: ...
+            prefix: chunked_parquet/en_yodas/
+            keyword_weights:
+              yodas: 3.0
+              librilight: 1.0
+            shuffle: true
+            length: 1000000
+    """
+
+    def __init__(
+        self,
+        bucket,
+        endpoint_url,
+        access_key_id,
+        secret_access_key,
+        region="auto",
+        keys=None,
+        prefix=None,
+        contains=None,
+        keyword_weights=None,
+        shuffle=True,
+        seed=None,
+        loop=True,
+        length=1000000,
+        batch_size=64,
+        columns=None,
+        bulk=False,
+        max_retries=None,
+    ):
+        self.length = length
+        self._config = CloudStorageConfig(
+            bucket=bucket,
+            endpoint_url=endpoint_url,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+            region=region,
+        )
+        self._stream_kwargs = dict(
+            keys=keys,
+            prefix=prefix,
+            contains=contains,
+            keyword_weights=keyword_weights,
+            shuffle=shuffle,
+            seed=seed,
+            loop=loop,
+            batch_size=batch_size,
+            columns=columns,
+            bulk=bulk,
+            max_retries=max_retries,
+        )
+        self._iter = None
+
+    def _ensure_iter(self):
+        if self._iter is None:
+            self._iter = iter(multi_stream_parquet(self._config, **self._stream_kwargs))
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        self._ensure_iter()
+        return next(self._iter)
 
 
 if __name__ == "__main__":
