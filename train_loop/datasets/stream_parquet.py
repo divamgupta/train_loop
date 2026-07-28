@@ -26,15 +26,21 @@ import pyarrow.parquet as pq
 from botocore.config import Config
 from botocore.exceptions import (
     ClientError, ConnectionError as BotoConnectionError,
-    ReadTimeoutError, ConnectTimeoutError, ConnectionClosedError,
-    IncompleteReadError, EndpointConnectionError,
+    HTTPClientError, IncompleteReadError,
 )
 
 log = logging.getLogger("stream_parquet")
 
-_RETRYABLE = (BotoConnectionError, EndpointConnectionError, ReadTimeoutError,
-              ConnectTimeoutError, ConnectionClosedError, IncompleteReadError,
-              ConnectionError, TimeoutError, OSError)
+# Match on the base classes, not the leaves: a mid-body disconnect surfaces as
+# ResponseStreamingError (botocore wraps urllib3's ProtocolError), which is an
+# HTTPClientError and was NOT covered by listing the leaf classes individually.
+#   BotoConnectionError -> EndpointConnectionError, ConnectTimeoutError, ...
+#   HTTPClientError     -> ReadTimeoutError, ConnectionClosedError,
+#                          ResponseStreamingError, ...
+#   IncompleteReadError  = stream ended cleanly but short of Content-Length
+# The builtin ConnectionError is a subclass of OSError, so it needs no entry.
+_RETRYABLE = (BotoConnectionError, HTTPClientError, IncompleteReadError,
+              TimeoutError, OSError)
 _RETRY_CODES = {"500", "502", "503", "504", "SlowDown", "ServiceUnavailable",
                 "RequestTimeout", "RequestTimeoutException", "InternalError",
                 "ThrottlingException", "Throttling"}
@@ -116,9 +122,19 @@ class RobustS3File:
     Reads are served from a one-block read-ahead cache; misses do a ranged GET with
     retries so a mid-stream disconnect resumes from the failed offset."""
 
-    def __init__(self, s3, bucket, key, block=8 << 20, max_retries=None):
+    def __init__(self, s3, bucket, key, block=8 << 20, max_retries=None,
+                 max_range=32 << 20, chunk=4 << 20):
+        """
+        block:     read-ahead size for small reads (one cached block).
+        max_range: largest span fetched per HTTP request. A parquet file written
+                   as a single row group makes pyarrow ask for the whole audio
+                   column at once (~260 MB); splitting that into windows keeps
+                   any one dropped connection cheap.
+        chunk:     incremental body read size, i.e. resume granularity.
+        """
         self.s3, self.bucket, self.key = s3, bucket, key
         self.block, self.max_retries = block, max_retries
+        self.max_range, self.chunk = max_range, chunk
         self.pos = 0
         self.size = _with_retries(
             lambda: s3.head_object(Bucket=bucket, Key=key)["ContentLength"],
@@ -127,11 +143,52 @@ class RobustS3File:
         self._cache_start = 0
         self._closed = False
 
+    def _get_window(self, start, end_inclusive):
+        """Fetch one window, resuming in place across retries.
+
+        The body is drained incrementally into `buf`, so a mid-transfer
+        disconnect keeps what already arrived and the retry re-issues the GET
+        from the first byte still missing instead of restarting the window.
+        """
+        buf = bytearray()
+        expected = end_inclusive - start + 1
+
+        def fetch():
+            if len(buf) >= expected:
+                return          # already complete; a retry here would be an invalid range
+            if buf:
+                log.warning("stream_parquet: resuming bytes=%d-%d at +%d/%d bytes",
+                            start, end_inclusive, len(buf), expected)
+            rng = f"bytes={start + len(buf)}-{end_inclusive}"
+            body = self.s3.get_object(Bucket=self.bucket, Key=self.key, Range=rng)["Body"]
+            try:
+                while True:
+                    part = body.read(self.chunk)
+                    if not part:
+                        break
+                    buf.extend(part)
+            finally:
+                body.close()
+
+        _with_retries(fetch, self.max_retries,
+                      what=f"read bytes={start}-{end_inclusive}")
+
+        if len(buf) != expected:
+            raise IOError(f"{self.key}: short read for bytes={start}-{end_inclusive} "
+                          f"({len(buf)} of {expected} bytes)")
+        return bytes(buf)
+
     def _get_range(self, start, end_inclusive):
-        rng = f"bytes={start}-{end_inclusive}"
-        return _with_retries(
-            lambda: self.s3.get_object(Bucket=self.bucket, Key=self.key, Range=rng)["Body"].read(),
-            self.max_retries, what=f"read {rng}")
+        """Fetch [start, end_inclusive] as bytes, one bounded window at a time."""
+        if end_inclusive - start + 1 <= self.max_range:
+            return self._get_window(start, end_inclusive)
+        out = bytearray()
+        pos = start
+        while pos <= end_inclusive:
+            win_end = min(pos + self.max_range - 1, end_inclusive)
+            out.extend(self._get_window(pos, win_end))
+            pos = win_end + 1
+        return bytes(out)
 
     def read(self, n=-1):
         if self.pos >= self.size:
@@ -143,7 +200,13 @@ class RobustS3File:
             data = self._cache[off:off + want]
             self.pos += len(data)
             return data
-        fetch_end = min(max(end, self.pos + self.block), self.size) - 1
+        if want >= self.block:
+            # Large read (e.g. a whole column chunk): hand it straight back rather
+            # than also parking a second copy of it in the cache.
+            data = self._get_range(self.pos, end - 1)
+            self.pos += len(data)
+            return data
+        fetch_end = min(self.pos + self.block, self.size) - 1
         self._cache = self._get_range(self.pos, fetch_end)
         self._cache_start = self.pos
         data = self._cache[:want]
